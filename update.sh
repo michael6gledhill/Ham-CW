@@ -13,17 +13,24 @@
 
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "$0")" && pwd)"
+REPO_URL="https://github.com/michael6gledhill/Ham-CW.git"
+INSTALL_DIR="${HAM_CW_DIR:-$HOME/Ham-CW}"
 SERVICE="ham-cw"
 
-echo "[ham-cw update] pulling latest code..."
-git -C "$REPO_DIR" pull --ff-only
+# Clone if not present, otherwise pull
+if [ -d "$INSTALL_DIR/.git" ]; then
+    echo "[ham-cw update] pulling latest code..."
+    git -C "$INSTALL_DIR" pull --ff-only
+else
+    echo "[ham-cw update] cloning repo to $INSTALL_DIR..."
+    git clone "$REPO_URL" "$INSTALL_DIR"
+fi
 
 echo "[ham-cw update] building release binary..."
-cargo build --release --manifest-path "$REPO_DIR/Cargo.toml"
+cargo build --release --manifest-path "$INSTALL_DIR/Cargo.toml"
 
 echo "[ham-cw update] installing binary..."
-sudo install -m 755 "$REPO_DIR/target/release/ham-cw" /usr/local/bin/ham-cw
+sudo install -m 755 "$INSTALL_DIR/target/release/ham-cw" /usr/local/bin/ham-cw
 
 if systemctl is-active --quiet "$SERVICE"; then
     echo "[ham-cw update] restarting $SERVICE..."
