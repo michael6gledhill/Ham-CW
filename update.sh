@@ -32,6 +32,14 @@ cargo build --release --manifest-path "$INSTALL_DIR/Cargo.toml"
 echo "[ham-cw update] installing binary..."
 sudo install -m 755 "$INSTALL_DIR/target/release/ham-cw" /usr/local/bin/ham-cw
 
+# Install / update systemd service
+if [ -f "$INSTALL_DIR/ham-cw.service" ]; then
+    echo "[ham-cw update] installing systemd service..."
+    sudo cp "$INSTALL_DIR/ham-cw.service" /etc/systemd/system/ham-cw.service
+    sudo systemctl daemon-reload
+    sudo systemctl enable ham-cw
+fi
+
 if systemctl is-active --quiet "$SERVICE"; then
     echo "[ham-cw update] restarting $SERVICE..."
     sudo systemctl restart "$SERVICE"

@@ -237,8 +237,9 @@ fn run_sidetone(keyed: Arc<AtomicBool>, cfg: Arc<Mutex<Config>>) {
         hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)?;
         hwp.set_format(Format::s16())?;
         hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(PERIOD_FRAMES as i32, ValueOr::Nearest)?;
-        hwp.set_buffer_size(PERIOD_FRAMES as i32 * 4)?;
+        // Let ALSA pick period/buffer sizes that the hardware supports
+        hwp.set_period_size_near(PERIOD_FRAMES as i32, ValueOr::Nearest)?;
+        hwp.set_buffer_size_near(PERIOD_FRAMES as i32 * 4)?;
         pcm.hw_params(&hwp)?;
         pcm.start()
     };
