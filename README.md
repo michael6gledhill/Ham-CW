@@ -95,15 +95,15 @@ Pi GPIO header (active-low, accent on BCM pin numbers)
 | GPIO 6|  31  | DAH paddle                |
 | GPIO 13|  33 | TX switch (ground = TX)   |
 | GPIO 16|  36 | RX switch (ground = RX)   |
-| GPIO 18|  12 | PTT output (HIGH = key)   |
+| GPIO 22|  15 | PTT output (HIGH = key)   |
 +-------+------+---------------------------+
 ```
 
 **Pins to avoid** (used by the ReSpeaker HAT):
 GPIO 2, 3 (I2C), 17 (button), 18-21 (I2S audio)
 
-> **Note:** GPIO 18 is used by I2S on the ReSpeaker HAT. If PTT doesn't work
-> on GPIO 18, change it to GPIO 22 or 23 via the web UI.
+> **GPIO 18 is the I2S bit clock.** Do NOT use GPIO 18 for PTT — it will kill
+> all audio on the ReSpeaker HAT. The default PTT pin is GPIO 22.
 
 ### Paddle wiring
 
@@ -139,7 +139,7 @@ GPIO 18 drives an NPN transistor that grounds the PTT line when keying.
 
 ```
                     1k
-Pi GPIO 18 ---[resistor]---+
+Pi GPIO 22 ---[resistor]---+
                            |
                       B  |/
                    2N2222 |    C = Collector
@@ -185,7 +185,7 @@ The 100k/1k divider cuts the signal to about 1/100th. The cap blocks DC.
 ```
 ReSpeaker SPK+ --[100k]--+-[0.1uF cap]--> 2.5mm ring (mic)
 ReSpeaker SPK- ----------+--------------> 2.5mm sleeve (GND)
-Pi GPIO 18 ----[1k]---B 2N2222 C---------> 2.5mm tip (PTT)
+Pi GPIO 22 ----[1k]---B 2N2222 C---------> 2.5mm tip (PTT)
                            E
                            |
                           GND (shared with Pi and radio)

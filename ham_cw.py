@@ -10,6 +10,7 @@ Default wiring (BCM numbers, avoid ReSpeaker HAT pins 2,3,17,18-21):
   GPIO  6  <- DAH paddle   (pulled HIGH, grounded when pressed)
   GPIO 13  <- TX switch     (pulled HIGH, grounded = TX mode)
   GPIO 16  <- RX switch     (pulled HIGH, grounded = RX mode)
+  GPIO 22  -> PTT output    (HIGH = key radio)
 
 Usage:  python3 ham_cw.py [WPM]
 Web UI: http://<pi-ip>:8080
@@ -63,7 +64,7 @@ DEFAULTS = {
     "pin_dah": 6,
     "pin_tx": 13,
     "pin_rx": 16,
-    "pin_ptt": 18,
+    "pin_ptt": 22,
 }
 
 # ---------------------------------------------------------------------------
