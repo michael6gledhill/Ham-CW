@@ -219,7 +219,7 @@ impl Keyer {
 // ─── ALSA sidetone thread ─────────────────────────────────────────────────────
 
 #[cfg(feature = "sidetone")]
-fn run_sidetone(keyed: Arc<AtomicBool>, cfg: Arc<Mutex<Config>>) {
+fn run_sidetone(gs: Arc<GpioState>, cfg: Arc<Mutex<Config>>) {
     use alsa::pcm::{Access, Format, HwParams, PCM};
     use alsa::{Direction, ValueOr};
 
@@ -265,7 +265,7 @@ fn run_sidetone(keyed: Arc<AtomicBool>, cfg: Arc<Mutex<Config>>) {
     loop {
         let (on, freq, vol) = {
             let c = cfg.lock().unwrap();
-            (keyed.load(Ordering::Relaxed), c.freq, c.volume)
+            (gs.key_flag.load(Ordering::Relaxed), c.freq, c.volume)
         };
         // Recompute phase_step only when freq changes
         if freq != last_freq {
@@ -314,7 +314,7 @@ fn char_to_morse(c: char) -> Option<&'static str> {
 
 /// Send a text string as CW elements via PTT + GPIO.
 /// Blocks until the string is fully sent.
-fn send_text(text: &str, ptt: &mut OutputPin, cfg: &Config, key_flag: &Arc<AtomicBool>) {
+fn send_text(text: &str, ptt: &mut OutputPin, cfg: &Config, gs: &Arc<GpioState>) {
     let unit    = cfg.dit_dur();
     let dah     = cfg.dah_dur();
     let char_sp = unit * 3; // space between letters
@@ -329,10 +329,10 @@ fn send_text(text: &str, ptt: &mut OutputPin, cfg: &Config, key_flag: &Arc<Atomi
             for (i, sym) in morse.chars().enumerate() {
                 let on_dur = if sym == '-' { dah } else { unit };
                 ptt.set_high();
-                key_flag.store(true, Ordering::Relaxed);
+                gs.key_flag.store(true, Ordering::Relaxed);
                 thread::sleep(on_dur);
                 ptt.set_low();
-                key_flag.store(false, Ordering::Relaxed);
+                gs.key_flag.store(false, Ordering::Relaxed);
                 // inter-element space (skip after last element)
                 if i + 1 < morse.len() {
                     thread::sleep(unit);
@@ -384,7 +384,16 @@ fn http_respond(mut stream: TcpStream, status: &str, body: &str, ctype: &str) {
     stream.write_all(resp.as_bytes()).ok();
 }
 
-fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<Mutex<Config>>) {
+/// Shared live GPIO state readable by the HTTP server.
+struct GpioState {
+    dit:      AtomicBool,
+    dah:      AtomicBool,
+    tx_sw:    AtomicBool,
+    key_flag: AtomicBool, // true while RF key / sidetone is active
+    test:     AtomicBool, // set by HTTP, cleared by keyer loop after tone
+}
+
+fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<Mutex<Config>>, gpio_st: &Arc<GpioState>) {
     let mut reader = BufReader::new(stream.try_clone().expect("clone stream"));
 
     let mut req_line = String::new();
@@ -405,6 +414,26 @@ fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<M
     const MAX_BODY: usize = 512;
     if content_length > MAX_BODY {
         http_respond(stream, "413 Payload Too Large", "too large", "text/plain");
+        return;
+    }
+
+    // GET /paddles — return live paddle + key state as JSON
+    if req_line.starts_with("GET /paddles") {
+        let json = format!(
+            r#"{{"dit":{},"dah":{},"tx":{},"keyed":{}}}"#,
+            gpio_st.dit.load(Ordering::Relaxed),
+            gpio_st.dah.load(Ordering::Relaxed),
+            gpio_st.tx_sw.load(Ordering::Relaxed),
+            gpio_st.key_flag.load(Ordering::Relaxed),
+        );
+        http_respond(stream, "200 OK", &json, "application/json");
+        return;
+    }
+
+    // POST /test — trigger a short test tone (dit-length beep)
+    if req_line.starts_with("POST /test") {
+        gpio_st.test.store(true, Ordering::SeqCst);
+        http_respond(stream, "200 OK", "ok", "text/plain");
         return;
     }
 
@@ -470,14 +499,15 @@ fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<M
     http_respond(stream, "404 Not Found", "not found", "text/plain");
 }
 
-fn run_http_server(tx: SyncSender<String>, cfg_mtx: Arc<Mutex<Config>>) {
+fn run_http_server(tx: SyncSender<String>, cfg_mtx: Arc<Mutex<Config>>, gpio_st: Arc<GpioState>) {
     let listener = TcpListener::bind("0.0.0.0:8080").expect("cannot bind :8080");
     println!("ham-cw web UI: http://0.0.0.0:8080");
     for stream in listener.incoming() {
         if let Ok(s) = stream {
             let tx2  = tx.clone();
             let cfg2 = cfg_mtx.clone();
-            thread::spawn(move || handle_connection(s, &tx2, &cfg2));
+            let gs2  = gpio_st.clone();
+            thread::spawn(move || handle_connection(s, &tx2, &cfg2, &gs2));
         }
     }
 }
@@ -521,8 +551,14 @@ fn main() {
         .expect("PTT pin unavailable")
         .into_output_low();
 
-    // ── Sidetone thread ──────────────────────────────────────────────────────
-    let key_flag = Arc::new(AtomicBool::new(false));
+    // ── Shared GPIO state for HTTP visibility + test trigger ─────────────────
+    let gpio_st = Arc::new(GpioState {
+        dit:      AtomicBool::new(false),
+        dah:      AtomicBool::new(false),
+        tx_sw:    AtomicBool::new(false),
+        key_flag: AtomicBool::new(false),
+        test:     AtomicBool::new(false),
+    });
 
     // ── Shared runtime config ────────────────────────────────────────────────
     set_system_volume(init_cfg.volume);
@@ -530,7 +566,7 @@ fn main() {
 
     #[cfg(feature = "sidetone")]
     {
-        let kf   = key_flag.clone();
+        let kf   = gpio_st.clone();
         let cfg2 = cfg_mtx.clone();
         thread::Builder::new()
             .name("sidetone".into())
@@ -543,9 +579,10 @@ fn main() {
 
     {
         let cfg2 = cfg_mtx.clone();
+        let gs2  = gpio_st.clone();
         thread::Builder::new()
             .name("http".into())
-            .spawn(move || run_http_server(http_tx, cfg2))
+            .spawn(move || run_http_server(http_tx, cfg2, gs2))
             .expect("http thread spawn failed");
     }
 
@@ -568,10 +605,25 @@ fn main() {
             last_wpm   = cfg.wpm;
         }
 
+        // ── Test tone trigger from HTTP ───────────────────────────────────────
+        if gpio_st.test.load(Ordering::SeqCst) {
+            gpio_st.test.store(false, Ordering::SeqCst);
+            let snap = cfg_mtx.lock().unwrap().clone();
+            // Play one dit-length beep via sidetone (no PTT)
+            gpio_st.key_flag.store(true, Ordering::Relaxed);
+            thread::sleep(snap.dit_dur());
+            gpio_st.key_flag.store(false, Ordering::Relaxed);
+            thread::sleep(snap.dit_dur()); // gap
+            gpio_st.key_flag.store(true, Ordering::Relaxed);
+            thread::sleep(snap.dah_dur());
+            gpio_st.key_flag.store(false, Ordering::Relaxed);
+            continue;
+        }
+
         // ── Check for web-queued text ────────────────────────────────────────
         if let Ok(text) = http_rx.try_recv() {
             let snap = cfg_mtx.lock().unwrap().clone();
-            send_text(&text, &mut ptt, &snap, &key_flag);
+            send_text(&text, &mut ptt, &snap, &gpio_st);
             continue;
         }
 
@@ -579,14 +631,20 @@ fn main() {
         let dit_dn = dit_pin.is_high();
         let dah_dn = dah_pin.is_high();
         let tx_on  = tx_sw.is_high();
+
+        // Publish live paddle state for HTTP /paddles endpoint
+        gpio_st.dit.store(dit_dn, Ordering::Relaxed);
+        gpio_st.dah.store(dah_dn, Ordering::Relaxed);
+        gpio_st.tx_sw.store(tx_on, Ordering::Relaxed);
+
         let rf_key = keyer.tick(dit_dn, dah_dn);
 
         if tx_on && rf_key {
             ptt.set_high();
-            key_flag.store(true, Ordering::Relaxed);
+            gpio_st.key_flag.store(true, Ordering::Relaxed);
         } else {
             ptt.set_low();
-            key_flag.store(false, Ordering::Relaxed);
+            gpio_st.key_flag.store(false, Ordering::Relaxed);
         }
 
         thread::sleep(poll_period);
@@ -595,5 +653,5 @@ fn main() {
     // ── Clean shutdown ────────────────────────────────────────────────────────
     println!("\nham-cw shutting down — PTT released");
     ptt.set_low();
-    key_flag.store(false, Ordering::Relaxed);
+    gpio_st.key_flag.store(false, Ordering::Relaxed);
 }

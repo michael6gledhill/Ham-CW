@@ -15,6 +15,8 @@
   button{padding:.35rem 1rem;background:#0a0;color:#000;border:none;font:inherit;cursor:pointer}
   button:active{opacity:.6}
   .m{min-height:1.1em;font-size:.82rem;margin-top:.3rem}
+  .led{display:inline-block;padding:.3rem .7rem;border:1px solid #0a0;border-radius:.2rem;font-size:.8rem;color:#040;background:#010;margin-right:.3rem;transition:all .15s}
+  .led.on{color:#0f0;background:#040;box-shadow:0 0 6px #0f0}
 </style>
 </head>
 <body>
@@ -76,6 +78,19 @@
 <div class="row"><button onclick="saveAll()">Apply settings</button></div>
 <div id="sm" class="m"></div>
 
+<h2>Test</h2>
+<div class="row">
+  <button onclick="testTone()">Test tone (dit-dah)</button>
+  <button id="padBtn" onclick="togglePaddles()">Monitor paddles</button>
+</div>
+<div class="row" id="padRow" style="display:none">
+  <span class="led" id="led_dit">DIT</span>
+  <span class="led" id="led_dah">DAH</span>
+  <span class="led" id="led_tx">TX</span>
+  <span class="led" id="led_key">KEY</span>
+</div>
+<div id="testm" class="m"></div>
+
 <h2>Send CW</h2>
 <textarea id="txt" rows="3" placeholder="Text to send (Ctrl+Enter)"></textarea>
 <div class="row"><button onclick="sendText()">Send</button></div>
@@ -133,6 +148,41 @@ async function sendText(){
 document.getElementById('txt').addEventListener('keydown',function(e){
   if(e.key==='Enter'&&e.ctrlKey)sendText();
 });
+
+async function testTone(){
+  try{
+    var r=await fetch('/test',{method:'POST'});
+    m('testm',r.ok?'Tone sent':'Error '+r.status,r.ok);
+  }catch(e){m('testm',''+e,false);}
+}
+
+var padTimer=null;
+function togglePaddles(){
+  if(padTimer){
+    clearInterval(padTimer);
+    padTimer=null;
+    document.getElementById('padRow').style.display='none';
+    document.getElementById('padBtn').textContent='Monitor paddles';
+    return;
+  }
+  document.getElementById('padRow').style.display='flex';
+  document.getElementById('padBtn').textContent='Stop monitoring';
+  padTimer=setInterval(pollPaddles,80);
+}
+async function pollPaddles(){
+  try{
+    var r=await fetch('/paddles');
+    var d=await r.json();
+    setLed('led_dit',d.dit);
+    setLed('led_dah',d.dah);
+    setLed('led_tx',d.tx);
+    setLed('led_key',d.keyed);
+  }catch(e){}
+}
+function setLed(id,on){
+  var el=document.getElementById(id);
+  if(on)el.classList.add('on');else el.classList.remove('on');
+}
 </script>
 </body>
 </html>
