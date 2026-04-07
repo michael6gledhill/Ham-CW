@@ -20,9 +20,25 @@ def get_ip():
 
 
 def speak(text):
-    """Use espeak to say text through ALSA audio."""
-    subprocess.run(["espeak", "-s", "130", text],
+    """Use espeak piped to the ReSpeaker 2-Mic HAT via ALSA."""
+    # Ensure WM8960 output mixers are unmuted and volume is up
+    for ctrl in ["Speaker", "Playback", "Left Output Mixer PCM",
+                 "Right Output Mixer PCM"]:
+        subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", ctrl, "on"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", "Speaker", "100%"],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", "Playback", "100%"],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+    # espeak -> wav -> aplay on the ReSpeaker HAT
+    espeak = subprocess.Popen(
+        ["espeak", "-s", "130", "--stdout", text],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    subprocess.run(
+        ["aplay", "-D", "plughw:seeed2micvoicec,0"],
+        stdin=espeak.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    espeak.wait()
 
 
 def main():
