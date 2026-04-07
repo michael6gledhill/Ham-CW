@@ -20,25 +20,18 @@ def get_ip():
 
 
 def speak(text):
-    """Use espeak piped to the ReSpeaker 2-Mic HAT via ALSA."""
-    # Ensure WM8960 output mixers are unmuted and volume is up
-    for ctrl in ["Speaker", "Playback", "Left Output Mixer PCM",
-                 "Right Output Mixer PCM"]:
-        subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", ctrl, "on"],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", "Speaker", "100%"],
+    """Use espeak + aplay to speak through the ReSpeaker 2-Mic HAT."""
+    wav = os.path.join(tempfile.gettempdir(), "say_ip.wav")
+    # Generate WAV file
+    subprocess.run(["espeak", "-s", "130", "-w", wav, text],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["amixer", "-c", "seeed2micvoicec", "sset", "Playback", "100%"],
+    # Play on the ReSpeaker HAT (card 0)
+    subprocess.run(["aplay", "-D", "plughw:seeed2micvoicec,0", wav],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    # espeak -> wav -> aplay on the ReSpeaker HAT
-    espeak = subprocess.Popen(
-        ["espeak", "-s", "130", "--stdout", text],
-        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    subprocess.run(
-        ["aplay", "-D", "plughw:seeed2micvoicec,0"],
-        stdin=espeak.stdout, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    espeak.wait()
+    try:
+        os.remove(wav)
+    except OSError:
+        pass
 
 
 def main():
