@@ -63,6 +63,7 @@ DEFAULTS = {
     "pin_dah": 6,
     "pin_tx": 13,
     "pin_rx": 16,
+    "pin_ptt": 18,
 }
 
 # ---------------------------------------------------------------------------
@@ -132,6 +133,7 @@ def apply_config(body):
         if "pin_dah" in vals: _config["pin_dah"] = _clamp(vals["pin_dah"], 0, 27)
         if "pin_tx"  in vals: _config["pin_tx"]  = _clamp(vals["pin_tx"], 0, 27)
         if "pin_rx"  in vals: _config["pin_rx"]  = _clamp(vals["pin_rx"], 0, 27)
+        if "pin_ptt" in vals: _config["pin_ptt"] = _clamp(vals["pin_ptt"], 0, 27)
         result = dict(_config)
     save_config()
     set_system_volume(result["volume"])
@@ -446,8 +448,9 @@ def setup_pins(cfg):
         return
     for pin in (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"]):
         IO.setup(pin, IO.IN, pull_up_down=IO.PUD_UP)
+    IO.setup(cfg["pin_ptt"], IO.OUT, initial=IO.LOW)
     print(f"ham-cw: GPIO  DIT={cfg['pin_dit']}  DAH={cfg['pin_dah']}"
-          f"  TX={cfg['pin_tx']}  RX={cfg['pin_rx']}")
+          f"  TX={cfg['pin_tx']}  RX={cfg['pin_rx']}  PTT={cfg['pin_ptt']}")
 
 
 def read_pin(pin):
@@ -544,7 +547,8 @@ def main():
 
     # GPIO
     setup_pins(cfg)
-    cur_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"])
+    cur_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"],
+                cfg["pin_ptt"])
 
     set_system_volume(cfg["volume"])
 
@@ -572,7 +576,8 @@ def main():
             last_wpm = cfg["wpm"]
 
         # Hot-reload GPIO pins
-        new_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"])
+        new_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"],
+                    cfg["pin_ptt"])
         if new_pins != cur_pins:
             if HAS_GPIO:
                 for p in cur_pins:
@@ -639,12 +644,17 @@ def main():
             keyer.dit_mem = False
             keyer.dah_mem = False
 
+        # PTT output — key the radio while tone is sounding
+        if HAS_GPIO:
+            IO.output(cfg["pin_ptt"], IO.HIGH if key_flag else IO.LOW)
+
         time.sleep(0.001)
 
     # Shutdown
     print("\nham-cw shutting down")
     key_flag = False
     if HAS_GPIO:
+        IO.output(cfg["pin_ptt"], IO.LOW)
         IO.cleanup()
 
 # ---------------------------------------------------------------------------
@@ -710,7 +720,8 @@ HTML = r"""<!DOCTYPE html>
 <div class="row"><label>DAH paddle</label><input id="pin_dah" type="number" min="0" max="27" value="6" class="num"></div>
 <div class="row"><label>TX switch</label><input id="pin_tx" type="number" min="0" max="27" value="13" class="num"></div>
 <div class="row"><label>RX switch</label><input id="pin_rx" type="number" min="0" max="27" value="16" class="num"></div>
-<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Active-low (grounded when pressed). Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT). Hold both paddles 3 s to announce IP.</p>
+<div class="row"><label>PTT output</label><input id="pin_ptt" type="number" min="0" max="27" value="18" class="num"></div>
+<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Inputs are active-low. PTT output goes HIGH when keying. Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT). Hold both paddles 3 s to announce IP.</p>
 
 <div class="row"><button onclick="saveAll()">Apply settings</button></div>
 <div id="sm" class="m"></div>
@@ -746,7 +757,7 @@ fetch('/config').then(r=>r.json()).then(d=>{
   set('freq',d.freq,'freqv');
   set('weight',d.weight,'weightv',v=>(v/100).toFixed(1)+'x');
   set('vol',d.volume,'volv',v=>v+'%');
-  ['pin_dit','pin_dah','pin_tx','pin_rx'].forEach(k=>{
+  ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
     var el=document.getElementById(k);
     if(el&&d[k]!==undefined)el.value=d[k];
   });
@@ -760,7 +771,7 @@ async function saveAll(){
     weight:parseInt(document.getElementById('weight').value),
     volume:parseInt(document.getElementById('vol').value),
     pin_dit:pin('pin_dit'),pin_dah:pin('pin_dah'),
-    pin_tx:pin('pin_tx'),pin_rx:pin('pin_rx')
+    pin_tx:pin('pin_tx'),pin_rx:pin('pin_rx'),pin_ptt:pin('pin_ptt')
   });
   try{
     var r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
@@ -774,7 +785,7 @@ async function saveAll(){
       document.getElementById('weightv').textContent=(d.weight/100).toFixed(1)+'x';
       document.getElementById('vol').value=d.volume;
       document.getElementById('volv').textContent=d.volume+'%';
-      ['pin_dit','pin_dah','pin_tx','pin_rx'].forEach(k=>{
+      ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
         if(d[k]!==undefined)document.getElementById(k).value=d[k];
       });
       m('sm','Settings applied',true);
