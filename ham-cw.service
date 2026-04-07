@@ -1,0 +1,14 @@
+[Unit]
+Description=ham-cw iambic CW keyer
+After=local-fs.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/ham-cw
+ExecStart=/home/pi/ham-cw/target/release/ham-cw 20
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
