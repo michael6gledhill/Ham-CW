@@ -26,10 +26,19 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use std::{env, process, thread};
+use std::{env, fs, process, thread};
 
 // Global shutdown flag written only by signal handlers
 static SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// Config file path — saved in the user's home directory.
+fn config_path() -> std::path::PathBuf {
+    if let Ok(home) = env::var("HOME") {
+        std::path::PathBuf::from(home).join(".ham-cw.conf")
+    } else {
+        std::path::PathBuf::from("/tmp/ham-cw.conf")
+    }
+}
 
 extern "C" fn on_signal(_: libc::c_int) {
     SHUTDOWN.store(true, Ordering::SeqCst);
@@ -70,7 +79,7 @@ struct Config {
 }
 
 impl Config {
-    fn default() -> Self {
+    fn default_cfg() -> Self {
         Config {
             wpm: DEFAULT_WPM, freq: DEFAULT_FREQ, weight: DEFAULT_WEIGHT, volume: DEFAULT_VOL,
             pin_dit: DEFAULT_PIN_DIT, pin_dah: DEFAULT_PIN_DAH,
@@ -94,7 +103,26 @@ impl Config {
             self.pin_dit, self.pin_dah, self.pin_tx, self.pin_spk, self.pin_ptt
         )
     }
-}
+    /// Save config to disk as JSON.
+    fn save(&self) {
+        let path = config_path();
+        if let Err(e) = fs::write(&path, self.to_json()) {
+            eprintln!("ham-cw: could not save config to {}: {e}", path.display());
+        }
+    }
+
+    /// Load config from disk, falling back to defaults for missing fields.
+    fn load() -> Self {
+        let base = Config::default_cfg();
+        let path = config_path();
+        match fs::read_to_string(&path) {
+            Ok(s) => {
+                println!("ham-cw: loaded config from {}", path.display());
+                parse_config_json(&s, &base)
+            }
+            Err(_) => base,
+        }
+    }}
 
 
 
@@ -485,12 +513,20 @@ fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<M
             http_respond(stream, "400 Bad Request", "read error", "text/plain");
             return;
         }
-        let new_cfg = {
-            let base = cfg_mtx.lock().unwrap().clone();
-            parse_config_json(&String::from_utf8_lossy(&body), &base)
-        };
+        let old_cfg = cfg_mtx.lock().unwrap().clone();
+        let new_cfg = parse_config_json(&String::from_utf8_lossy(&body), &old_cfg);
+        let pins_changed = new_cfg.pin_dit != old_cfg.pin_dit
+            || new_cfg.pin_dah != old_cfg.pin_dah
+            || new_cfg.pin_tx  != old_cfg.pin_tx
+            || new_cfg.pin_spk != old_cfg.pin_spk
+            || new_cfg.pin_ptt != old_cfg.pin_ptt;
         let vol = new_cfg.volume;
-        let json = new_cfg.to_json();
+        new_cfg.save();
+        let mut json = new_cfg.to_json();
+        if pins_changed {
+            // Insert restart flag into JSON so the frontend can show a notice
+            json = format!(r#"{{"restart_needed":true,{}"#, &json[1..]);
+        }
         *cfg_mtx.lock().unwrap() = new_cfg;
         set_system_volume(vol);
         http_respond(stream, "200 OK", &json, "application/json");
@@ -549,7 +585,7 @@ fn main() {
     // ── GPIO init ────────────────────────────────────────────────────────────
     let gpio = Gpio::new().expect("GPIO init failed – are you on a Pi?");
 
-    let init_cfg = Config::default();
+    let init_cfg = Config::load();
     let init_cfg = { let mut c = init_cfg; c.wpm = wpm; c };
 
     // Paddles + switch: pulled HIGH, grounded when pressed/active

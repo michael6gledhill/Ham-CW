@@ -131,7 +131,14 @@ async function saveAll(){
   });
   try{
     var r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
-    m('sm',r.ok?'Saved':'Error '+r.status,r.ok);
+    if(r.ok){
+      var d=await r.json();
+      var msg='Saved';
+      if(d.restart_needed)msg+=' — restart service for pin changes: sudo systemctl restart ham-cw';
+      m('sm',msg,true);
+    }else{
+      m('sm','Error '+r.status,false);
+    }
   }catch(e){m('sm',''+e,false);}
 }
 
