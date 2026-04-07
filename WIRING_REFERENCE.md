@@ -20,8 +20,8 @@ Top Row (Pins 1-20):              Bottom Row (Pins 21-40):
 11  GPIO 17 ⭐ AUDIO RELAY        31  GPIO 6
 12  GPIO 18 ⭐ PTT OUTPUT         32  GPIO 12 ⭐ DIT PADDLE
 13  GPIO 27                       33  GPIO 13 ⭐ DAH PADDLE
-14  GND                           34  GND
-15  GPIO 22                       35  GPIO 19 ⭐ OFF SWITCH
+14  GND                           34  GND     ⭐ OFF SWITCH
+15  GPIO 22                       35  GPIO 19 
 16  GPIO 23                       36  GPIO 16 ⭐ TX SWITCH
 17  3.3V                          37  GPIO 26
 18  GPIO 24                       38  GPIO 20 ⭐ SPEAKER SWITCH

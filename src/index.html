@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ham-cw</title>
+<style>
+  body{font-family:monospace;max-width:420px;margin:2rem auto;background:#111;color:#0f0;padding:1rem}
+  h2{margin:1.2rem 0 .4rem;color:#0a0;font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid #0a0;padding-bottom:.2rem}
+  .row{display:flex;align-items:center;gap:.6rem;margin:.4rem 0}
+  label{width:8rem;color:#080;flex-shrink:0}
+  input[type=range]{flex:1;min-width:0;accent-color:#0a0}
+  span.val{width:3.5rem;text-align:right;font-size:.9rem}
+  textarea{width:100%;box-sizing:border-box;background:#000;color:#0f0;border:1px solid #0a0;padding:.4rem;font:inherit;resize:vertical}
+  button{padding:.35rem 1rem;background:#0a0;color:#000;border:none;font:inherit;cursor:pointer}
+  button:active{opacity:.6}
+  .m{min-height:1.1em;font-size:.82rem;margin-top:.3rem}
+</style>
+</head>
+<body>
+<h1 style="margin:0 0 .5rem;font-size:1.3rem">ham-cw settings</h1>
+
+<h2>Speed</h2>
+<div class="row">
+  <label>WPM</label>
+  <input id="wpm" type="range" min="5" max="60" value="20"
+         oninput="document.getElementById('wpmv').textContent=this.value">
+  <span class="val" id="wpmv">20</span>
+</div>
+
+<h2>Tone</h2>
+<div class="row">
+  <label>Frequency (Hz)</label>
+  <input id="freq" type="range" min="200" max="2000" step="10" value="700"
+         oninput="document.getElementById('freqv').textContent=this.value">
+  <span class="val" id="freqv">700</span>
+</div>
+<div class="row">
+  <label>Dash weight</label>
+  <input id="weight" type="range" min="200" max="500" step="10" value="300"
+         oninput="document.getElementById('weightv').textContent=(this.value/100).toFixed(1)+'x'">
+  <span class="val" id="weightv">3.0x</span>
+</div>
+
+<h2>Volume</h2>
+<div class="row">
+  <label>Master volume</label>
+  <input id="vol" type="range" min="0" max="100" value="70"
+         oninput="document.getElementById('volv').textContent=this.value+'%'">
+  <span class="val" id="volv">70%</span>
+</div>
+
+<h2>GPIO pins (BCM)</h2>
+<div class="row">
+  <label>DIT paddle</label>
+  <input id="pin_dit" type="number" min="0" max="27" value="12" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+</div>
+<div class="row">
+  <label>DAH paddle</label>
+  <input id="pin_dah" type="number" min="0" max="27" value="13" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+</div>
+<div class="row">
+  <label>TX switch</label>
+  <input id="pin_tx" type="number" min="0" max="27" value="2" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+</div>
+<div class="row">
+  <label>SPK switch</label>
+  <input id="pin_spk" type="number" min="0" max="27" value="3" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+</div>
+<div class="row">
+  <label>PTT output</label>
+  <input id="pin_ptt" type="number" min="0" max="27" value="18" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+</div>
+<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Pin changes take effect after restarting the service.</p>
+
+<div class="row"><button onclick="saveAll()">Apply settings</button></div>
+<div id="sm" class="m"></div>
+
+<h2>Send CW</h2>
+<textarea id="txt" rows="3" placeholder="Text to send (Ctrl+Enter)"></textarea>
+<div class="row"><button onclick="sendText()">Send</button></div>
+<div id="tm" class="m"></div>
+
+<script>
+function m(id,t,ok){var e=document.getElementById(id);e.textContent=t;e.style.color=ok?'#0f0':'#f55';}
+
+fetch('/config').then(function(r){return r.json();}).then(function(d){
+  function set(id,v,dispId,fmt){
+    var el=document.getElementById(id);
+    if(!el)return;
+    el.value=v;
+    if(dispId)document.getElementById(dispId).textContent=fmt?fmt(v):v;
+  }
+  set('wpm',    d.wpm,    'wpmv');
+  set('freq',   d.freq,   'freqv');
+  set('weight', d.weight, 'weightv', function(v){return (v/100).toFixed(1)+'x';});
+  set('vol',    d.volume, 'volv',    function(v){return v+'%';});
+  ['pin_dit','pin_dah','pin_tx','pin_spk','pin_ptt'].forEach(function(k){
+    var el=document.getElementById(k);
+    if(el&&d[k]!==undefined)el.value=d[k];
+  });
+}).catch(function(){});
+
+async function saveAll(){
+  function pin(id){return parseInt(document.getElementById(id).value)||0;}
+  var body=JSON.stringify({
+    wpm:    parseInt(document.getElementById('wpm').value),
+    freq:   parseInt(document.getElementById('freq').value),
+    weight: parseInt(document.getElementById('weight').value),
+    volume: parseInt(document.getElementById('vol').value),
+    pin_dit: pin('pin_dit'),
+    pin_dah: pin('pin_dah'),
+    pin_tx:  pin('pin_tx'),
+    pin_spk: pin('pin_spk'),
+    pin_ptt: pin('pin_ptt')
+  });
+  try{
+    var r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
+    m('sm',r.ok?'Saved':'Error '+r.status,r.ok);
+  }catch(e){m('sm',''+e,false);}
+}
+
+async function sendText(){
+  var t=document.getElementById('txt').value.trim();
+  if(!t)return;
+  m('tm','Sending\u2026',true);
+  try{
+    var r=await fetch('/send',{method:'POST',headers:{'Content-Type':'text/plain'},body:t});
+    m('tm',r.ok?'Queued':(r.status===503?'Busy \u2014 retry':'Error '+r.status),r.ok);
+  }catch(e){m('tm',''+e,false);}
+}
+
+document.getElementById('txt').addEventListener('keydown',function(e){
+  if(e.key==='Enter'&&e.ctrlKey)sendText();
+});
+</script>
+</body>
+</html>
