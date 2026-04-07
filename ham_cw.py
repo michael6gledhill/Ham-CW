@@ -307,12 +307,12 @@ def send_text(text):
 # ---------------------------------------------------------------------------
 import array as _array
 
-# Pre-computed wavetable — 2048 entries of one full sine cycle
+# Pre-computed wavetable — 2048 entries of one full sine cycle (max amplitude)
 _WAVE_LEN = 2048
 _WAVETABLE = [int(math.sin(2.0 * math.pi * i / _WAVE_LEN) * 32767)
               for i in range(_WAVE_LEN)]
 
-# Larger period = fewer wakeups = Pi Zero can keep up
+# Period size for ALSA writes (1024 frames = ~21 ms at 48 kHz)
 _TONE_PERIOD = 1024
 
 
@@ -342,62 +342,79 @@ def sidetone_thread():
         print("ham-cw: no audio device found - no sidetone")
         return
 
-    # Phase accumulator: fixed-point, 16.16 format stepping through wavetable
-    phase_acc = 0
-    last_freq = 0
-    phase_inc = 0   # how much to advance per sample (fixed-point)
+    # --- Pre-computed ring buffer approach ---
+    # A 1-second ring of tone samples at the current freq/vol.
+    # For any integer Hz frequency, SAMPLE_RATE samples = exact whole cycles,
+    # so the ring wraps seamlessly with no click.
+    ring = _array.array('h', [0]) * SAMPLE_RATE
+    ring_freq = 0
+    ring_vol = -1.0
+    ring_pos = 0
 
     envelope = 0.0
     RAMP_STEP = 1.0 / (SAMPLE_RATE * 0.005)  # 5 ms ramp
-
-    # Pre-allocate
-    wavetable = _WAVETABLE
-    wave_len = _WAVE_LEN
     silence = bytes(_TONE_PERIOD * 2)
+    period = _TONE_PERIOD
+    sr = SAMPLE_RATE
 
     while not _shutdown.is_set():
         cfg = get_config()
         freq = cfg["freq"]
         vol = cfg["volume"] / 100.0
 
-        if freq != last_freq:
-            # Fixed-point increment: freq * table_len / sample_rate * 65536
-            phase_inc = int(freq * wave_len * 65536 / SAMPLE_RATE)
-            last_freq = freq
+        # Rebuild ring when settings change
+        if freq != ring_freq or vol != ring_vol:
+            pinc = freq * _WAVE_LEN / sr
+            wt = _WAVETABLE
+            wl = _WAVE_LEN
+            ring = _array.array('h',
+                (int(wt[int(i * pinc) % wl] * vol) for i in range(sr)))
+            ring_freq = freq
+            ring_vol = vol
 
         target = 1.0 if key_flag else 0.0
 
-        # Fast path: fully silent and target is silent
+        # Fast path: fully silent
         if envelope == 0.0 and target == 0.0:
             try:
                 pcm.write(silence)
             except Exception:
                 pass
+            ring_pos = (ring_pos + period) % sr
             continue
 
-        # Build buffer using wavetable lookup — much faster than math.sin()
-        samples = _array.array('h', [0]) * _TONE_PERIOD
+        # Fast path: steady tone (envelope fully on)
+        if envelope >= 1.0 and target >= 1.0:
+            pos = ring_pos
+            end = pos + period
+            if end <= sr:
+                buf = ring[pos:end].tobytes()
+            else:
+                buf = (ring[pos:] + ring[:end - sr]).tobytes()
+            ring_pos = end % sr
+            try:
+                pcm.write(buf)
+            except Exception:
+                pass
+            continue
+
+        # Envelope transition: per-sample ramp (only ~240 samples = 5 ms)
+        samples = _array.array('h', [0]) * period
         env = envelope
         rs = RAMP_STEP
-        pa = phase_acc
-        wl_mask = wave_len - 1  # power of 2, so mask works
-
-        for i in range(_TONE_PERIOD):
-            # Ramp envelope
+        pos = ring_pos
+        for i in range(period):
             if env < target:
                 env = min(env + rs, 1.0)
             elif env > target:
                 env = max(env - rs, 0.0)
+            samples[i] = int(ring[pos] * env)
+            pos += 1
+            if pos >= sr:
+                pos = 0
 
-            # Wavetable lookup (top bits of fixed-point accumulator)
-            idx = (pa >> 16) & wl_mask
-            samples[i] = int(wavetable[idx] * vol * env)
-            pa += phase_inc
-
-        # Store state back
         envelope = env
-        phase_acc = pa & 0xFFFFFFFF  # keep 32-bit
-
+        ring_pos = pos
         try:
             pcm.write(samples.tobytes())
         except Exception:
