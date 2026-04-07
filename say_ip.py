@@ -25,8 +25,8 @@ def speak(text):
     # Generate WAV file
     subprocess.run(["espeak", "-s", "130", "-w", wav, text],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Play on the ReSpeaker HAT (card 0)
-    subprocess.run(["aplay", "-D", "plughw:seeed2micvoicec,0", wav],
+    # Play via default ALSA device (uses dmix from ~/.asoundrc for sharing)
+    subprocess.run(["aplay", wav],
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
         os.remove(wav)

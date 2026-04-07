@@ -32,6 +32,12 @@ cargo build --release --manifest-path "$INSTALL_DIR/Cargo.toml"
 echo "[ham-cw update] installing binary..."
 sudo install -m 755 "$INSTALL_DIR/target/release/ham-cw" /usr/local/bin/ham-cw
 
+# Install ALSA dmix config for ReSpeaker HAT (allows audio sharing)
+if [ -f "$INSTALL_DIR/asoundrc" ]; then
+    echo "[ham-cw update] installing ~/.asoundrc (ALSA dmix for ReSpeaker)..."
+    cp "$INSTALL_DIR/asoundrc" "$HOME/.asoundrc"
+fi
+
 # Install / update systemd service
 if [ -f "$INSTALL_DIR/ham-cw.service" ]; then
     echo "[ham-cw update] installing systemd service..."

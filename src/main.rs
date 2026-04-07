@@ -267,8 +267,9 @@ fn run_sidetone(gs: Arc<GpioState>, cfg: Arc<Mutex<Config>>) {
     use alsa::pcm::{Access, Format, HwParams, PCM};
     use alsa::{Direction, ValueOr};
 
-    // Try ReSpeaker HAT first, then fall back to default ALSA device
-    let device_names = ["plughw:seeed2micvoicec", "plughw:1,0", "default"];
+    // Try "default" first (uses dmix if ~/.asoundrc is set up),
+    // then fall back to direct hardware access.
+    let device_names = ["default", "plughw:seeed2micvoicec", "plughw:1,0"];
     let pcm = {
         let mut found = None;
         for dev in &device_names {
