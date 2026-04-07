@@ -123,20 +123,19 @@ class GpioHandler:
 
     # -- speaker (software PWM) -------------------------------------------
 
-    def speaker_on(self, freq, volume):
-        """Start or update the PWM sidetone.
+    def speaker_on(self, freq):
+        """Start or update the PWM sidetone at *freq* Hz.
 
-        *volume* 0-100 maps to duty cycle 0-50%.
+        Fixed 50% duty cycle for a clean square wave tone.
+        Volume is controlled only on the ALSA output to the radio.
         """
         if not HAS_GPIO:
             return
         pin = self._pins["pin_spk"]
-        duty = max(0.1, volume * 0.5)
 
         if self._pwm is not None and self._pwm_pin == pin:
             try:
                 self._pwm.ChangeFrequency(max(1, freq))
-                self._pwm.ChangeDutyCycle(duty)
                 return
             except Exception:
                 self._pwm = None
@@ -144,7 +143,7 @@ class GpioHandler:
         self.speaker_off()
         try:
             self._pwm = IO.PWM(pin, max(1, freq))
-            self._pwm.start(duty)
+            self._pwm.start(50)
             self._pwm_pin = pin
         except Exception:
             self._pwm = None

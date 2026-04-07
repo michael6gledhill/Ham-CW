@@ -205,7 +205,7 @@ def _keyer_loop():
         if key_down != _state.key_down:
             _state.key_down = key_down
             if key_down:
-                _gpio.speaker_on(cfg['freq'], cfg['volume'])
+                _gpio.speaker_on(cfg['freq'])
                 _audio.set_key(True)
                 _gpio.set_ptt(True)
             else:
