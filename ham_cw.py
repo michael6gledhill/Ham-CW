@@ -218,12 +218,12 @@ class Keyer:
 
         if self.phase == SENDING:
             dur = self.unit if self.element == DIT else self.unit * weight / 100
-            # Only latch memory during the active tone — a tap that ends
-            # before the element finishes won't set memory for a repeat.
-            if dit_dn:
-                self.dit_mem = True
-            if dah_dn:
+            # Only latch the OPPOSITE paddle into memory (for iambic squeeze).
+            # Same-paddle hold is detected via live state when spacing ends.
+            if self.element == DIT and dah_dn:
                 self.dah_mem = True
+            elif self.element == DAH and dit_dn:
+                self.dit_mem = True
             if now - self.timer >= dur:
                 self.last = self.element
                 self.phase = SPACING
@@ -232,10 +232,11 @@ class Keyer:
             return True
 
         if self.phase == SPACING:
-            # During the inter-element gap, do NOT latch paddle state into
-            # memory — only honour what was already latched during SENDING.
             if now - self.timer >= self.unit:
+                # Check memory first (squeeze), then live paddles (hold)
                 el = self._pick_mem()
+                if el is None:
+                    el = self._pick_live(dit_dn, dah_dn)
                 if el is not None:
                     self._begin(el, now)
                     return True
