@@ -449,7 +449,6 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(200, json.dumps({
                 "dit": dit_live, "dah": dah_live,
                 "tx": tx_live, "rx": rx_live,
-                "keyed": key_flag,
             }), "application/json")
         elif self.path == "/":
             self._respond(200, HTML, "text/html; charset=utf-8")
@@ -688,7 +687,6 @@ HTML = r"""<!DOCTYPE html>
   <span class="led" id="led_dah">DAH</span>
   <span class="led" id="led_tx">TX</span>
   <span class="led" id="led_rx">RX</span>
-  <span class="led" id="led_key">KEY</span>
 </div>
 <div id="testm" class="m"></div>
 
@@ -786,8 +784,7 @@ async function pollPaddles(){
       var el=document.getElementById('led_'+k);
       if(d[k])el.classList.add('on');else el.classList.remove('on');
     });
-    var key=document.getElementById('led_key');
-    if(d.keyed)key.classList.add('on');else key.classList.remove('on');
+
   }catch(e){}
 }
 </script>
