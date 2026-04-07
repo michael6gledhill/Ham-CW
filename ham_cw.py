@@ -59,7 +59,8 @@ DEFAULTS = {
     "wpm": 20,
     "freq": 700,
     "weight": 300,
-    "volume": 70,
+    "vol_hp": 70,
+    "vol_spk": 70,
     "pin_dit": 5,
     "pin_dah": 6,
     "pin_tx": 13,
@@ -96,6 +97,10 @@ def load_config():
     global _config
     try:
         data = json.loads(CONFIG_PATH.read_text())
+        # Migrate old single "volume" to split vol_hp / vol_spk
+        if "volume" in data and "vol_hp" not in data:
+            data["vol_hp"] = data["volume"]
+            data["vol_spk"] = data["volume"]
         with _lock:
             for k in DEFAULTS:
                 if k in data:
@@ -129,7 +134,8 @@ def apply_config(body):
         if "wpm"    in vals: _config["wpm"]    = _clamp(vals["wpm"], 5, 60)
         if "freq"   in vals: _config["freq"]   = _clamp(vals["freq"], 200, 2000)
         if "weight" in vals: _config["weight"] = _clamp(vals["weight"], 200, 500)
-        if "volume" in vals: _config["volume"] = _clamp(vals["volume"], 0, 100)
+        if "vol_hp" in vals: _config["vol_hp"] = _clamp(vals["vol_hp"], 0, 100)
+        if "vol_spk" in vals: _config["vol_spk"] = _clamp(vals["vol_spk"], 0, 100)
         if "pin_dit" in vals: _config["pin_dit"] = _clamp(vals["pin_dit"], 0, 27)
         if "pin_dah" in vals: _config["pin_dah"] = _clamp(vals["pin_dah"], 0, 27)
         if "pin_tx"  in vals: _config["pin_tx"]  = _clamp(vals["pin_tx"], 0, 27)
@@ -137,16 +143,18 @@ def apply_config(body):
         if "pin_ptt" in vals: _config["pin_ptt"] = _clamp(vals["pin_ptt"], 0, 27)
         result = dict(_config)
     save_config()
-    set_system_volume(result["volume"])
+    set_system_volume(result["vol_hp"], result["vol_spk"])
     return result
 
 # ---------------------------------------------------------------------------
 #  Volume (ReSpeaker 2-Mic HAT / WM8960)
 # ---------------------------------------------------------------------------
-def set_system_volume(vol):
-    pct = f"{_clamp(vol, 0, 100)}%"
-    for ctrl in ["Playback", "Speaker Playback Volume",
-                 "Headphone Playback Volume"]:
+def set_system_volume(vol_hp, vol_spk):
+    hp_pct = f"{_clamp(vol_hp, 0, 100)}%"
+    spk_pct = f"{_clamp(vol_spk, 0, 100)}%"
+    for ctrl, pct in [("Headphone Playback Volume", hp_pct),
+                      ("Speaker Playback Volume", spk_pct),
+                      ("Playback", "100%")]:
         subprocess.Popen(
             ["amixer", "-c", "seeed2micvoicec", "sset", ctrl, pct],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -375,28 +383,28 @@ def sidetone_thread():
     period = _TONE_PERIOD
     sr = SAMPLE_RATE
 
-    def to_stereo(mono_arr):
-        """Duplicate mono array to interleaved L+R stereo bytes."""
+    def to_stereo(mono_arr, vl, vr):
+        """Scale mono to interleaved L+R stereo bytes with per-channel volume."""
         st = _array.array('h', [0]) * (len(mono_arr) * 2)
         for i in range(len(mono_arr)):
-            st[i * 2] = mono_arr[i]
-            st[i * 2 + 1] = mono_arr[i]
+            st[i * 2]     = int(mono_arr[i] * vl)
+            st[i * 2 + 1] = int(mono_arr[i] * vr)
         return st.tobytes()
 
     while not _shutdown.is_set():
         cfg = get_config()
         freq = cfg["freq"]
-        vol = cfg["volume"] / 100.0
+        vol_hp  = cfg["vol_hp"]  / 100.0
+        vol_spk = cfg["vol_spk"] / 100.0
 
-        # Rebuild ring when settings change
-        if freq != ring_freq or vol != ring_vol:
+        # Rebuild ring when freq changes (ring stores full-scale samples)
+        if freq != ring_freq:
             pinc = freq * _WAVE_LEN / sr
             wt = _WAVETABLE
             wl = _WAVE_LEN
             ring = _array.array('h',
-                (int(wt[int(i * pinc) % wl] * vol) for i in range(sr)))
+                (int(wt[int(i * pinc) % wl]) for i in range(sr)))
             ring_freq = freq
-            ring_vol = vol
 
         target = 1.0 if key_flag else 0.0
 
@@ -419,7 +427,7 @@ def sidetone_thread():
                 mono = ring[pos:] + ring[:end - sr]
             ring_pos = end % sr
             try:
-                pcm.write(to_stereo(mono))
+                pcm.write(to_stereo(mono, vol_hp, vol_spk))
             except Exception:
                 pass
             continue
@@ -442,7 +450,7 @@ def sidetone_thread():
         envelope = env
         ring_pos = pos
         try:
-            pcm.write(to_stereo(samples))
+            pcm.write(to_stereo(samples, vol_hp, vol_spk))
         except Exception:
             pass
 
@@ -558,7 +566,7 @@ def main():
     cur_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"],
                 cfg["pin_ptt"])
 
-    set_system_volume(cfg["volume"])
+    set_system_volume(cfg["vol_hp"], cfg["vol_spk"])
 
     # Signals
     def on_sig(sig, frame):
@@ -717,10 +725,16 @@ HTML = r"""<!DOCTYPE html>
 
 <h2>Volume</h2>
 <div class="row">
-  <label>Master volume</label>
-  <input id="vol" type="range" min="0" max="100" value="70"
-         oninput="document.getElementById('volv').textContent=this.value+'%'">
-  <span class="val" id="volv">70%</span>
+  <label>Headphone</label>
+  <input id="vol_hp" type="range" min="0" max="100" value="70"
+         oninput="document.getElementById('vol_hpv').textContent=this.value+'%'">
+  <span class="val" id="vol_hpv">70%</span>
+</div>
+<div class="row">
+  <label>Speaker</label>
+  <input id="vol_spk" type="range" min="0" max="100" value="70"
+         oninput="document.getElementById('vol_spkv').textContent=this.value+'%'">
+  <span class="val" id="vol_spkv">70%</span>
 </div>
 
 <h2>GPIO pins (BCM)</h2>
@@ -764,7 +778,8 @@ fetch('/config').then(r=>r.json()).then(d=>{
   set('wpm',d.wpm,'wpmv');
   set('freq',d.freq,'freqv');
   set('weight',d.weight,'weightv',v=>(v/100).toFixed(1)+'x');
-  set('vol',d.volume,'volv',v=>v+'%');
+  set('vol_hp',d.vol_hp,'vol_hpv',v=>v+'%');
+  set('vol_spk',d.vol_spk,'vol_spkv',v=>v+'%');
   ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
     var el=document.getElementById(k);
     if(el&&d[k]!==undefined)el.value=d[k];
@@ -777,7 +792,8 @@ async function saveAll(){
     wpm:parseInt(document.getElementById('wpm').value),
     freq:parseInt(document.getElementById('freq').value),
     weight:parseInt(document.getElementById('weight').value),
-    volume:parseInt(document.getElementById('vol').value),
+    vol_hp:parseInt(document.getElementById('vol_hp').value),
+    vol_spk:parseInt(document.getElementById('vol_spk').value),
     pin_dit:pin('pin_dit'),pin_dah:pin('pin_dah'),
     pin_tx:pin('pin_tx'),pin_rx:pin('pin_rx'),pin_ptt:pin('pin_ptt')
   });
@@ -791,8 +807,10 @@ async function saveAll(){
       document.getElementById('freqv').textContent=d.freq;
       document.getElementById('weight').value=d.weight;
       document.getElementById('weightv').textContent=(d.weight/100).toFixed(1)+'x';
-      document.getElementById('vol').value=d.volume;
-      document.getElementById('volv').textContent=d.volume+'%';
+      document.getElementById('vol_hp').value=d.vol_hp;
+      document.getElementById('vol_hpv').textContent=d.vol_hp+'%';
+      document.getElementById('vol_spk').value=d.vol_spk;
+      document.getElementById('vol_spkv').textContent=d.vol_spk+'%';
       ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
         if(d[k]!==undefined)document.getElementById(k).value=d[k];
       });
