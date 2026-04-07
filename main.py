@@ -167,6 +167,9 @@ def _keyer_loop():
         _state.dit = dit_pressed
         _state.dah = dah_pressed
 
+        # -- poll parameter switches -------------------------------------
+        _gpio.poll_switches()
+
         # -- hold both paddles 3 s -> announce IP ------------------------
         if dit_pressed and dah_pressed:
             both_timer += dt
@@ -252,23 +255,18 @@ def main():
     kt.start()
     print('ham-cw: keyer running')
 
-    # GUI (only if a display is available)
-    display = os.environ.get('DISPLAY') or os.environ.get('WAYLAND_DISPLAY')
-    if display:
-        try:
-            import tkinter as tk
-            from gui import KeyerGui
+    # GUI (try to open regardless — let tkinter find the display)
+    try:
+        import tkinter as tk
+        from gui import KeyerGui
 
-            root = tk.Tk()
-            KeyerGui(root, _App())
-            print('ham-cw: GUI started')
-            root.mainloop()              # blocks until window is closed
-            _shutdown.set()
-        except Exception as e:
-            print(f'ham-cw: GUI unavailable ({e}), running headless')
-            _shutdown.wait()
-    else:
-        print('ham-cw: no display detected, running headless')
+        root = tk.Tk()
+        KeyerGui(root, _App())
+        print('ham-cw: GUI started')
+        root.mainloop()              # blocks until window is closed
+        _shutdown.set()
+    except Exception as e:
+        print(f'ham-cw: GUI unavailable ({e}), running headless')
         _shutdown.wait()
 
     # Cleanup

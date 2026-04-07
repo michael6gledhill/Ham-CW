@@ -1,9 +1,15 @@
 """GPIO handler for ham-cw keyer.
 
-Manages paddle/switch inputs with interrupt-driven edge detection,
-software-PWM sidetone speaker, and PTT output.  Falls back to stubs
+Manages paddle/switch inputs with polled software debounce,
+PWM sidetone speaker, and PTT output.  Falls back to stubs
 when RPi.GPIO is unavailable (desktop testing).
+
+Note: RPi.GPIO add_event_detect is broken on Pi OS kernels >= 6.x
+(gpiochip interface).  All inputs are polled from the keyer loop
+instead, which runs at 1 ms — plenty fast for debounce.
 """
+
+import time
 
 try:
     import RPi.GPIO as IO
@@ -12,9 +18,9 @@ except ImportError:
     IO = None
     HAS_GPIO = False
 
-# Debounce times (ms)
-_PADDLE_BOUNCE = 5       # paddles need fast response
-_SWITCH_BOUNCE = 200     # toggle switches need heavy debounce
+# Debounce hold-off (seconds)
+_SW_DEBOUNCE = 0.25         # parameter switches
+_PADDLE_DEBOUNCE = 0.005    # paddles (not used directly — keyer handles)
 
 
 class GpioHandler:
@@ -26,6 +32,14 @@ class GpioHandler:
         self._pins = {}
         self.on_adjust = None      # callback(direction: +1/-1)
         self.on_cycle = None       # callback()
+
+        # Switch debounce state
+        self._sw_up_last = False
+        self._sw_down_last = False
+        self._sw_sel_last = False
+        self._sw_up_time = 0.0
+        self._sw_down_time = 0.0
+        self._sw_sel_time = 0.0
 
     # -- setup / teardown -------------------------------------------------
 
@@ -50,20 +64,10 @@ class GpioHandler:
         IO.setup(self._pins["pin_spk_gnd"], IO.OUT, initial=IO.LOW)
         IO.setup(self._pins["pin_ptt"], IO.OUT, initial=IO.LOW)
 
-        # Edge detection for parameter switches
-        IO.add_event_detect(
-            self._pins["pin_sw_up"], IO.FALLING,
-            callback=lambda _ch: self._fire_adjust(1),
-            bouncetime=_SWITCH_BOUNCE)
-        IO.add_event_detect(
-            self._pins["pin_sw_down"], IO.FALLING,
-            callback=lambda _ch: self._fire_adjust(-1),
-            bouncetime=_SWITCH_BOUNCE)
-        # Switch B: any flip (both edges) cycles the selected parameter
-        IO.add_event_detect(
-            self._pins["pin_sw_sel"], IO.BOTH,
-            callback=lambda _ch: self._fire_cycle(),
-            bouncetime=_SWITCH_BOUNCE)
+        # Read initial switch state so first poll doesn't false-trigger
+        self._sw_up_last = self._read("pin_sw_up")
+        self._sw_down_last = self._read("pin_sw_down")
+        self._sw_sel_last = self._read("pin_sw_sel")
 
     def cleanup(self):
         """Release GPIO resources."""
@@ -74,17 +78,48 @@ class GpioHandler:
             except Exception:
                 pass
 
-    # -- paddle reads (called every keyer tick) ---------------------------
+    # -- input reads ------------------------------------------------------
+
+    def _read(self, key):
+        """Read a pin by config key name. Returns True when active (low)."""
+        if not HAS_GPIO:
+            return False
+        return IO.input(self._pins[key]) == 0
 
     def read_dit(self):
-        if not HAS_GPIO:
-            return False
-        return IO.input(self._pins["pin_dit"]) == 0
+        return self._read("pin_dit")
 
     def read_dah(self):
-        if not HAS_GPIO:
-            return False
-        return IO.input(self._pins["pin_dah"]) == 0
+        return self._read("pin_dah")
+
+    def poll_switches(self):
+        """Call every tick from keyer loop.  Fires on_adjust / on_cycle
+        callbacks on debounced switch transitions."""
+        now = time.monotonic()
+
+        # Switch A — Up
+        cur = self._read("pin_sw_up")
+        if cur and not self._sw_up_last and (now - self._sw_up_time) > _SW_DEBOUNCE:
+            self._sw_up_time = now
+            if self.on_adjust:
+                self.on_adjust(1)
+        self._sw_up_last = cur
+
+        # Switch A — Down
+        cur = self._read("pin_sw_down")
+        if cur and not self._sw_down_last and (now - self._sw_down_time) > _SW_DEBOUNCE:
+            self._sw_down_time = now
+            if self.on_adjust:
+                self.on_adjust(-1)
+        self._sw_down_last = cur
+
+        # Switch B — Select (fire on any change)
+        cur = self._read("pin_sw_sel")
+        if cur != self._sw_sel_last and (now - self._sw_sel_time) > _SW_DEBOUNCE:
+            self._sw_sel_time = now
+            if self.on_cycle:
+                self.on_cycle()
+        self._sw_sel_last = cur
 
     # -- speaker (software PWM) -------------------------------------------
 
