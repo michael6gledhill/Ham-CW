@@ -1,14 +1,14 @@
 [Unit]
 Description=ham-cw iambic CW keyer
-After=local-fs.target
+After=local-fs.target sound.target
 
 [Service]
 Type=simple
 User=pi
 WorkingDirectory=/home/pi/Ham-CW
-ExecStart=/usr/local/bin/ham-cw 20
+ExecStart=/usr/bin/python3 /home/pi/Ham-CW/ham_cw.py
 Restart=on-failure
-RestartSec=5
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target

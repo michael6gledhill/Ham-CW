@@ -7,8 +7,8 @@
 #
 # What it does:
 #   1. Pulls the latest code from git
-#   2. Rebuilds the release binary
-#   3. Installs it to /usr/local/bin
+#   2. Installs Python dependencies
+#   3. Installs ALSA config + systemd service
 #   4. Restarts the ham-cw systemd service
 
 set -euo pipefail
@@ -26,11 +26,8 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-echo "[ham-cw update] building release binary..."
-cargo build --release --manifest-path "$INSTALL_DIR/Cargo.toml"
-
-echo "[ham-cw update] installing binary..."
-sudo install -m 755 "$INSTALL_DIR/target/release/ham-cw" /usr/local/bin/ham-cw
+echo "[ham-cw update] installing Python dependencies..."
+sudo apt-get install -y --no-install-recommends python3-alsaaudio espeak 2>/dev/null || true
 
 # Install ALSA dmix config for ReSpeaker HAT (allows audio sharing)
 if [ -f "$INSTALL_DIR/asoundrc" ]; then
