@@ -19,12 +19,13 @@ else
 fi
 
 # 2. Install Python dependencies (only if missing)
-for pkg in python3-rpi.gpio; do
+for pkg in python3-rpi.gpio python3-alsaaudio python3-tk; do
     dpkg -s "$pkg" &>/dev/null || NEED_INSTALL=1
 done
 if [ "${NEED_INSTALL:-0}" = "1" ]; then
     echo "[ham-cw] installing dependencies..."
-    sudo apt-get install -y --no-install-recommends python3-rpi.gpio
+    sudo apt-get install -y --no-install-recommends \
+        python3-rpi.gpio python3-alsaaudio python3-tk
 fi
 
 # 3. Update systemd service, daemon-reload, enable, restart
