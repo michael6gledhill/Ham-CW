@@ -20,7 +20,6 @@ import math
 import os
 import signal
 import socket
-import struct
 import subprocess
 import sys
 import tempfile
@@ -53,7 +52,6 @@ except ImportError:
 # ---------------------------------------------------------------------------
 CONFIG_PATH = Path.home() / ".ham-cw.conf"
 SAMPLE_RATE = 48000
-PERIOD_SIZE = 512
 HTTP_PORT = 8080
 
 DEFAULTS = {
@@ -307,6 +305,17 @@ def send_text(text):
 # ---------------------------------------------------------------------------
 #  Sidetone audio thread
 # ---------------------------------------------------------------------------
+import array as _array
+
+# Pre-computed wavetable — 2048 entries of one full sine cycle
+_WAVE_LEN = 2048
+_WAVETABLE = [int(math.sin(2.0 * math.pi * i / _WAVE_LEN) * 32767)
+              for i in range(_WAVE_LEN)]
+
+# Larger period = fewer wakeups = Pi Zero can keep up
+_TONE_PERIOD = 1024
+
+
 def sidetone_thread():
     if not HAS_AUDIO:
         return
@@ -322,7 +331,7 @@ def sidetone_thread():
                 channels=1,
                 rate=SAMPLE_RATE,
                 format=alsaaudio.PCM_FORMAT_S16_LE,
-                periodsize=PERIOD_SIZE,
+                periodsize=_TONE_PERIOD,
             )
             print(f"ham-cw: sidetone using ALSA device '{dev}'")
             break
@@ -333,38 +342,64 @@ def sidetone_thread():
         print("ham-cw: no audio device found - no sidetone")
         return
 
-    phase = 0.0
+    # Phase accumulator: fixed-point, 16.16 format stepping through wavetable
+    phase_acc = 0
     last_freq = 0
-    step = 0.0
-    # Smooth envelope: 0.0 = silent, 1.0 = full volume
+    phase_inc = 0   # how much to advance per sample (fixed-point)
+
     envelope = 0.0
-    # Ramp time in seconds — 5 ms eliminates clicks
-    RAMP_TIME = 0.005
-    ramp_step = 1.0 / (SAMPLE_RATE * RAMP_TIME)
+    RAMP_STEP = 1.0 / (SAMPLE_RATE * 0.005)  # 5 ms ramp
+
+    # Pre-allocate
+    wavetable = _WAVETABLE
+    wave_len = _WAVE_LEN
+    silence = bytes(_TONE_PERIOD * 2)
 
     while not _shutdown.is_set():
         cfg = get_config()
         freq = cfg["freq"]
         vol = cfg["volume"] / 100.0
+
         if freq != last_freq:
-            step = 2.0 * math.pi * freq / SAMPLE_RATE
+            # Fixed-point increment: freq * table_len / sample_rate * 65536
+            phase_inc = int(freq * wave_len * 65536 / SAMPLE_RATE)
             last_freq = freq
 
         target = 1.0 if key_flag else 0.0
-        buf = bytearray(PERIOD_SIZE * 2)
-        for i in range(PERIOD_SIZE):
-            # Ramp envelope toward target
-            if envelope < target:
-                envelope = min(envelope + ramp_step, 1.0)
-            elif envelope > target:
-                envelope = max(envelope - ramp_step, 0.0)
-            val = int(math.sin(phase) * 32767 * vol * envelope)
-            struct.pack_into('<h', buf, i * 2, max(-32768, min(32767, val)))
-            phase += step
-            if phase >= 2 * math.pi:
-                phase -= 2 * math.pi
+
+        # Fast path: fully silent and target is silent
+        if envelope == 0.0 and target == 0.0:
+            try:
+                pcm.write(silence)
+            except Exception:
+                pass
+            continue
+
+        # Build buffer using wavetable lookup — much faster than math.sin()
+        samples = _array.array('h', [0]) * _TONE_PERIOD
+        env = envelope
+        rs = RAMP_STEP
+        pa = phase_acc
+        wl_mask = wave_len - 1  # power of 2, so mask works
+
+        for i in range(_TONE_PERIOD):
+            # Ramp envelope
+            if env < target:
+                env = min(env + rs, 1.0)
+            elif env > target:
+                env = max(env - rs, 0.0)
+
+            # Wavetable lookup (top bits of fixed-point accumulator)
+            idx = (pa >> 16) & wl_mask
+            samples[i] = int(wavetable[idx] * vol * env)
+            pa += phase_inc
+
+        # Store state back
+        envelope = env
+        phase_acc = pa & 0xFFFFFFFF  # keep 32-bit
+
         try:
-            pcm.write(bytes(buf))
+            pcm.write(samples.tobytes())
         except Exception:
             pass
 
