@@ -92,19 +92,27 @@ class AudioEngine:
         self._ring_freq = freq
 
     def _run(self):                             # noqa: C901  (audio loop)
-        # Open ALSA PCM device
-        try:
-            pcm = alsaaudio.PCM(
-                type=alsaaudio.PCM_PLAYBACK,
-                device='default',
-                channels=CHANNELS,
-                rate=SAMPLE_RATE,
-                format=alsaaudio.PCM_FORMAT_S16_LE,
-                periodsize=PERIOD_SIZE,
-            )
-        except Exception as e:
-            print(f"ham-cw: failed to open ALSA device: {e}")
+        # Open ALSA PCM device — try headphone jack first, fall back to default
+        device = None
+        for dev in ('plughw:Headphones', 'plughw:headphones',
+                     'plughw:0,0', 'default'):
+            try:
+                pcm = alsaaudio.PCM(
+                    type=alsaaudio.PCM_PLAYBACK,
+                    device=dev,
+                    channels=CHANNELS,
+                    rate=SAMPLE_RATE,
+                    format=alsaaudio.PCM_FORMAT_S16_LE,
+                    periodsize=PERIOD_SIZE,
+                )
+                device = dev
+                break
+            except Exception:
+                continue
+        if device is None:
+            print("ham-cw: failed to open any ALSA device")
             return
+        print(f"ham-cw: ALSA output on '{device}'")
 
         sr = SAMPLE_RATE
         period = PERIOD_SIZE
