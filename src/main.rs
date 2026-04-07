@@ -137,12 +137,16 @@ fn dit_dur(wpm: u32) -> Duration {
 /// Apply volume to the Pi's ALSA Master control (0–100).
 fn set_system_volume(vol: u32) {
     let v = vol.min(100);
-    process::Command::new("amixer")
-        .args(["sset", "Master", &format!("{v}%")])
-        .stdout(process::Stdio::null())
-        .stderr(process::Stdio::null())
-        .spawn()
-        .ok();
+    let pct = format!("{v}%");
+    // Try several mixer controls — ReSpeaker HAT uses "Speaker" or "Playback"
+    for ctrl in ["Master", "Speaker", "Playback", "PCM"] {
+        process::Command::new("amixer")
+            .args(["sset", ctrl, &pct])
+            .stdout(process::Stdio::null())
+            .stderr(process::Stdio::null())
+            .spawn()
+            .ok();
+    }
 }
 
 // ─── Iambic Mode-B keyer state machine ───────────────────────────────────────
@@ -292,7 +296,11 @@ fn run_sidetone(gs: Arc<GpioState>, cfg: Arc<Mutex<Config>>) {
         hwp.set_period_size_near(PERIOD_FRAMES as i32, ValueOr::Nearest)?;
         hwp.set_buffer_size_near(PERIOD_FRAMES as i32 * 4)?;
         pcm.hw_params(&hwp)?;
-        pcm.start()
+        // Auto-start playback once one period of data is queued
+        let swp = pcm.sw_params_current()?;
+        swp.set_start_threshold(PERIOD_FRAMES as alsa::pcm::Frames)?;
+        pcm.sw_params(&swp)?;
+        Ok(())
     };
 
     if let Err(e) = setup() {
@@ -419,7 +427,7 @@ fn parse_config_json(s: &str, base: &Config) -> Config {
 
 fn http_respond(mut stream: TcpStream, status: &str, body: &str, ctype: &str) {
     let resp = format!(
-        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        "HTTP/1.1 {status}\r\nContent-Type: {ctype}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
     stream.write_all(resp.as_bytes()).ok();
@@ -432,6 +440,29 @@ struct GpioState {
     tx_sw:    AtomicBool,
     key_flag: AtomicBool, // true while RF key / sidetone is active
     test:     AtomicBool, // set by HTTP, cleared by keyer loop after tone
+}
+
+/// Bundle of GPIO pin handles — rebuilt when config pins change at runtime.
+struct Pins {
+    dit: InputPin,
+    dah: InputPin,
+    tx:  InputPin,
+    _spk: InputPin,
+    ptt: OutputPin,
+}
+
+impl Pins {
+    fn new(gpio: &Gpio, cfg: &Config) -> Self {
+        println!("ham-cw: GPIO pins  DIT={} DAH={} TX={} SPK={} PTT={}",
+                 cfg.pin_dit, cfg.pin_dah, cfg.pin_tx, cfg.pin_spk, cfg.pin_ptt);
+        Pins {
+            dit:  gpio.get(cfg.pin_dit).expect("DIT pin unavailable").into_input_pullup(),
+            dah:  gpio.get(cfg.pin_dah).expect("DAH pin unavailable").into_input_pullup(),
+            tx:   gpio.get(cfg.pin_tx).expect("TX switch pin unavailable").into_input_pullup(),
+            _spk: gpio.get(cfg.pin_spk).expect("SPK switch pin unavailable").into_input_pullup(),
+            ptt:  gpio.get(cfg.pin_ptt).expect("PTT pin unavailable").into_output_low(),
+        }
+    }
 }
 
 fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<Mutex<Config>>, gpio_st: &Arc<GpioState>) {
@@ -507,21 +538,9 @@ fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<M
         }
         let old_cfg = cfg_mtx.lock().unwrap().clone();
         let new_cfg = parse_config_json(&String::from_utf8_lossy(&body), &old_cfg);
-        let pins_changed = new_cfg.pin_dit != old_cfg.pin_dit
-            || new_cfg.pin_dah != old_cfg.pin_dah
-            || new_cfg.pin_tx  != old_cfg.pin_tx
-            || new_cfg.pin_spk != old_cfg.pin_spk
-            || new_cfg.pin_ptt != old_cfg.pin_ptt;
         let vol = new_cfg.volume;
         new_cfg.save();
-        let mut json = new_cfg.to_json();
-        if pins_changed {
-            // Insert restart_needed flag into the JSON response
-            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) {
-                v.as_object_mut().unwrap().insert("restart_needed".into(), serde_json::Value::Bool(true));
-                json = v.to_string();
-            }
-        }
+        let json = new_cfg.to_json();
         *cfg_mtx.lock().unwrap() = new_cfg;
         set_system_volume(vol);
         http_respond(stream, "200 OK", &json, "application/json");
@@ -583,26 +602,9 @@ fn main() {
     let init_cfg = Config::load();
     let init_cfg = { let mut c = init_cfg; c.wpm = wpm; c };
 
-    // Paddles + switch: pulled HIGH, grounded when pressed/active
-    let dit_pin: InputPin = gpio.get(init_cfg.pin_dit)
-        .expect("DIT pin unavailable")
-        .into_input_pullup();
-
-    let dah_pin: InputPin = gpio.get(init_cfg.pin_dah)
-        .expect("DAH pin unavailable")
-        .into_input_pullup();
-
-    let tx_sw: InputPin = gpio.get(init_cfg.pin_tx)
-        .expect("TX switch pin unavailable")
-        .into_input_pullup();
-
-    let _spk_sw: InputPin = gpio.get(init_cfg.pin_spk)
-        .expect("SPK switch pin unavailable")
-        .into_input_pullup();
-
-    let mut ptt: OutputPin = gpio.get(init_cfg.pin_ptt)
-        .expect("PTT pin unavailable")
-        .into_output_low();
+    let mut pins = Pins::new(&gpio, &init_cfg);
+    let mut cur_pins = (init_cfg.pin_dit, init_cfg.pin_dah, init_cfg.pin_tx,
+                        init_cfg.pin_spk, init_cfg.pin_ptt);
 
     // ── Shared GPIO state for HTTP visibility + test trigger ─────────────────
     let gpio_st = Arc::new(GpioState {
@@ -658,6 +660,15 @@ fn main() {
             last_wpm   = cfg.wpm;
         }
 
+        // ── Hot-reload GPIO pins if config changed ───────────────────────────
+        let new_pins = (cfg.pin_dit, cfg.pin_dah, cfg.pin_tx, cfg.pin_spk, cfg.pin_ptt);
+        if new_pins != cur_pins {
+            // Drop all old pins first so they release their GPIO lines
+            drop(pins);
+            pins = Pins::new(&gpio, &cfg);
+            cur_pins = new_pins;
+        }
+
         // ── Test tone trigger from HTTP ───────────────────────────────────────
         if gpio_st.test.load(Ordering::SeqCst) {
             gpio_st.test.store(false, Ordering::SeqCst);
@@ -676,14 +687,14 @@ fn main() {
         // ── Check for web-queued text ────────────────────────────────────────
         if let Ok(text) = http_rx.try_recv() {
             let snap = cfg_mtx.lock().unwrap().clone();
-            send_text(&text, &mut ptt, &snap, &gpio_st);
+            send_text(&text, &mut pins.ptt, &snap, &gpio_st);
             continue;
         }
 
         // ── Iambic paddle (active-low: pressed = grounded = LOW) ──────────
-        let dit_dn = dit_pin.is_low();
-        let dah_dn = dah_pin.is_low();
-        let tx_on  = tx_sw.is_low();
+        let dit_dn = pins.dit.is_low();
+        let dah_dn = pins.dah.is_low();
+        let tx_on  = pins.tx.is_low();
 
         // Publish live paddle state for HTTP /paddles endpoint
         gpio_st.dit.store(dit_dn, Ordering::Relaxed);
@@ -693,10 +704,10 @@ fn main() {
         let rf_key = keyer.tick(dit_dn, dah_dn);
 
         if tx_on && rf_key {
-            ptt.set_high();
+            pins.ptt.set_high();
             gpio_st.key_flag.store(true, Ordering::Relaxed);
         } else {
-            ptt.set_low();
+            pins.ptt.set_low();
             gpio_st.key_flag.store(false, Ordering::Relaxed);
         }
 
@@ -705,6 +716,6 @@ fn main() {
 
     // ── Clean shutdown ────────────────────────────────────────────────────────
     println!("\nham-cw shutting down — PTT released");
-    ptt.set_low();
+    pins.ptt.set_low();
     gpio_st.key_flag.store(false, Ordering::Relaxed);
 }

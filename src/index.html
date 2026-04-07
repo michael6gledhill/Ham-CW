@@ -73,7 +73,7 @@
   <label>PTT output</label>
   <input id="pin_ptt" type="number" min="0" max="27" value="26" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
-<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Paddles &amp; switch are active-low (grounded when pressed). Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT). Pin changes need a service restart.</p>
+<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Paddles &amp; switch are active-low (grounded when pressed). Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT).</p>
 
 <div class="row"><button onclick="saveAll()">Apply settings</button></div>
 <div id="sm" class="m"></div>
@@ -133,9 +133,19 @@ async function saveAll(){
     var r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
     if(r.ok){
       var d=await r.json();
-      var msg='Saved';
-      if(d.restart_needed)msg+=' — restart service for pin changes: sudo systemctl restart ham-cw';
-      m('sm',msg,true);
+      // Update UI from server response
+      document.getElementById('wpm').value=d.wpm;
+      document.getElementById('wpmv').textContent=d.wpm;
+      document.getElementById('freq').value=d.freq;
+      document.getElementById('freqv').textContent=d.freq;
+      document.getElementById('weight').value=d.weight;
+      document.getElementById('weightv').textContent=(d.weight/100).toFixed(1)+'x';
+      document.getElementById('vol').value=d.volume;
+      document.getElementById('volv').textContent=d.volume+'%';
+      ['pin_dit','pin_dah','pin_tx','pin_spk','pin_ptt'].forEach(function(k){
+        if(d[k]!==undefined)document.getElementById(k).value=d[k];
+      });
+      m('sm','Settings applied',true);
     }else{
       m('sm','Error '+r.status,false);
     }
