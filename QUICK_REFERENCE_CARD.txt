@@ -1,0 +1,182 @@
+╔════════════════════════════════════════════════════════════════════════════╗
+║                     MORSE CODE SYSTEM - QUICK REFERENCE                   ║
+║                    Keep this by your workbench while wiring!              ║
+╚════════════════════════════════════════════════════════════════════════════╝
+
+┌─ RASPBERRY PI GPIO PINS ──────────────────────────────────────────────────┐
+│                                                                             │
+│  YOUR SYSTEM USES THESE PINS (all configurable in web interface):         │
+│                                                                             │
+│  GPIO 12 (Pin 32) ←→ DIT Paddle       [Change in web: DIT Pin = 12]      │
+│  GPIO 13 (Pin 33) ←→ DAH Paddle       [Change in web: DAH Pin = 13]      │
+│  GPIO 16 (Pin 36) ←→ TX Switch        [Change in web: TX Switch = 16]    │
+│  GPIO 20 (Pin 38) ←→ Speaker Switch   [Change in web: SPK Switch = 20]   │
+│  GPIO 18 (Pin 12) ←→ PTT Output       [Change in web: PTT Pin = 18]      │
+│                                                                             │
+│  Pin 6 or any GND  ←→ All grounds together                                │
+│  Pin 1 or 3.3V     ←→ Switch 3.3V power (if using pull-up)               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ QUICK WIRING CHECKLIST ──────────────────────────────────────────────────┐
+│                                                                             │
+│  □ DIT paddle → GPIO 12 + GND to Pin 6                                    │
+│  □ DAH paddle → GPIO 13 + GND to Pin 6                                    │
+│  □ TX switch → GPIO 16 + 10kΩ resistor to GND                            │
+│  □ SPK switch → GPIO 20 + 10kΩ resistor to GND                           │
+│  □ PTT output → GPIO 18 to relay coil (via transistor)                   │
+│  □ Relay NO → UV5R PTT line                                              │
+│  □ ReSpeaker audio out → UV5R microphone input                           │
+│  □ ReSpeaker speaker → External speaker                                  │
+│  □ All grounds tied to Pin 6                                              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ INSTALLATION STEPS ──────────────────────────────────────────────────────┐
+│                                                                             │
+│  1. mkdir -p ~/morse-code-system/src ~/morse-code-system/web             │
+│  2. cp all files to appropriate directories                              │
+│  3. cd ~/morse-code-system                                               │
+│  4. bash install.sh                                                      │
+│  5. cargo build --release                                                │
+│  6. Wire components (30-45 min, follow WIRING_REFERENCE.md)            │
+│  7. ./target/release/morse-backend (Terminal 1)                         │
+│  8. cd web && python3 -m http.server 8000 (Terminal 2)                 │
+│  9. Open http://localhost:8000 in browser                               │
+│  10. Configure GPIO pins, send morse code!                              │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ GPIO TESTING COMMANDS ───────────────────────────────────────────────────┐
+│                                                                             │
+│  Test DIT input:        gpioget gpiochip0 12                             │
+│  Test DAH input:        gpioget gpiochip0 13                             │
+│  Test TX switch:        gpioget gpiochip0 16                             │
+│  Test SPK switch:       gpioget gpiochip0 20                             │
+│  Test PTT output:       gpioset gpiochip0 18=1  (ON)                    │
+│  Release PTT:           gpioset gpiochip0 18=0  (OFF)                   │
+│                                                                             │
+│  Expected results:                                                        │
+│  Input pins: 0 when not pressed, 1 when activated                       │
+│  Output pins: LED lights when =1, off when =0                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ WEB INTERFACE ADDRESSES ─────────────────────────────────────────────────┐
+│                                                                             │
+│  From same Pi:          http://localhost:8000                             │
+│  From another computer: http://<PI-IP>:8000                              │
+│                                                                             │
+│  Backend API (for testing):                                              │
+│  GET  http://localhost:3030/api/status                                   │
+│  POST http://localhost:3030/api/morse (send {"code": "... --- ..."})    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ MORSE CODE EXAMPLES ─────────────────────────────────────────────────────┐
+│                                                                             │
+│  .... . .-.. .-.. ---     = HELLO                                        │
+│  .-- --- .-. .-.. -..    = WORLD                                         │
+│  ... --- ...             = SOS                                           │
+│  ... . -. -..            = SEND                                          │
+│  .... .- .-..           = HAL                                            │
+│                                                                             │
+│  Use spaces between characters in web interface                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ TROUBLESHOOTING QUICK FIXES ─────────────────────────────────────────────┐
+│                                                                             │
+│  GPIO Permission Denied:                                                  │
+│  → sudo usermod -a -G gpio pi && sudo reboot                            │
+│                                                                             │
+│  ReSpeaker Not Found:                                                     │
+│  → git clone https://github.com/respeaker/seeed-voicecard.git           │
+│  → cd seeed-voicecard && sudo bash install.sh && sudo reboot             │
+│                                                                             │
+│  Backend Won't Start:                                                     │
+│  → cargo build --release                                                 │
+│  → sudo lsof -i :3030 (check if port in use)                            │
+│                                                                             │
+│  Can't Connect to Web:                                                    │
+│  → Check backend running: ./target/release/morse-backend                 │
+│  → Check firewall: sudo ufw allow 3030                                   │
+│                                                                             │
+│  Paddle Not Detecting:                                                    │
+│  → gpioget gpiochip0 12 (manual test)                                    │
+│  → Check wire to GPIO 12 and ground                                      │
+│                                                                             │
+│  More help: See SETUP_GUIDE.md troubleshooting section                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ KEY COMMANDS ────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  Start backend:         ./target/release/morse-backend                    │
+│  Start web:             cd web && python3 -m http.server 8000            │
+│  View logs:             tail -f morse.log                                 │
+│  List audio:            arecord -l                                        │
+│  Test audio:            speaker-test -t sine -f 1000 -l 1               │
+│  Check GPIO groups:     groups pi                                        │
+│  Rebuild backend:       cargo build --release                            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ CONFIGURATION IN WEB INTERFACE ──────────────────────────────────────────┐
+│                                                                             │
+│  Change any GPIO pin number without restart!                             │
+│                                                                             │
+│  DIT Pin:        Default 12 (GPIO pin for DIT paddle)                   │
+│  DAH Pin:        Default 13 (GPIO pin for DAH paddle)                   │
+│  TX Switch:      Default 16 (GPIO pin for TX position)                  │
+│  Speaker Switch: Default 20 (GPIO pin for speaker position)             │
+│  PTT Output:     Default 18 (GPIO pin for PTT control)                  │
+│  DIT Duration:   Default 50ms (adjustable 10-500ms)                    │
+│                                                                             │
+│  Click "Save Configuration" to apply changes                             │
+│  Click "Refresh Status" to verify                                        │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+┌─ PHYSICAL PIN DIAGRAM (40-pin Raspberry Pi Header) ─────────────────────┐
+│                                                                             │
+│                             ┌─────────────┐                               │
+│                       3.3V ─→│ 1        2  │← 5V                         │
+│                   GPIO 2 ────│ 3        4  │← 5V                         │
+│                   GPIO 3 ────│ 5        6  │← GND                        │
+│                   GPIO 4 ────│ 7        8  │← GPIO 14                    │
+│                       GND ───│ 9       10  │← GPIO 15                    │
+│ GPIO 17 (Audio)    GPIO 17 ──│11       12  │← GPIO 18 (PTT) ⭐          │
+│                   GPIO 27 ───│13       14  │← GND                       │
+│                   GPIO 22 ───│15       16  │← GPIO 23                   │
+│                       3.3V ──│17       18  │← GPIO 24                   │
+│                   GPIO 10 ───│19       20  │← GND                       │
+│                    GPIO 9 ───│21       22  │← GPIO 25                   │
+│                   GPIO 11 ───│23       24  │← GPIO 8                    │
+│                       GND ───│25       26  │← GPIO 7                    │
+│ GPIO 0 (ID_SD)     GPIO 0 ───│27       28  │← GPIO 1 (ID_SC)            │
+│                    GPIO 5 ───│29       30  │← GND                       │
+│                    GPIO 6 ───│31       32  │← GPIO 12 (DIT) ⭐          │
+│                   GPIO 13 ───│33       34  │← GND                       │
+│ (DAH) ⭐                      │            │                             │
+│                   GPIO 19 ───│35       36  │← GPIO 16 (TX Switch) ⭐    │
+│ (OFF)  ⭐                     │            │                             │
+│                   GPIO 26 ───│37       38  │← GPIO 20 (SPK Switch) ⭐   │
+│ (Speaker)⭐                   │            │                             │
+│                       GND ───│39       40  │← GPIO 21                   │
+│                             └─────────────┘                               │
+│                                                                             │
+│  ⭐ = Pins used by Morse Code System (configurable)                     │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+╔════════════════════════════════════════════════════════════════════════════╗
+║  DOCUMENTATION FILES (Read in this order):                                 ║
+║  1. START_HERE.md - Overview (start here!)                                ║
+║  2. README.md - Quick start guide                                         ║
+║  3. WIRING_REFERENCE.md - Pin diagrams and wiring                         ║
+║  4. INSTALLATION_CHECKLIST.md - Step-by-step verification                 ║
+║  5. SETUP_GUIDE.md - Detailed setup and troubleshooting                   ║
+║                                                                             ║
+║  HAPPY MORSE CODING! 📡✨                                                  ║
+╚════════════════════════════════════════════════════════════════════════════╝
