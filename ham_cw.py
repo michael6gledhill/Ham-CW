@@ -204,26 +204,27 @@ class Keyer:
 
     def tick(self, dit_dn, dah_dn, weight):
         """Call every ~1 ms.  Returns True while tone should sound."""
-        if dit_dn:
-            self.dit_mem = True
-        if dah_dn:
-            self.dah_mem = True
         now = time.monotonic()
 
         if self.phase == IDLE:
-            el = self._choose(dit_dn, dah_dn)
+            # Direct paddle read — no memory needed when idle
+            el = self._pick_live(dit_dn, dah_dn)
             if el is not None:
+                self.dit_mem = False
+                self.dah_mem = False
                 self._begin(el, now)
                 return True
             return False
 
         if self.phase == SENDING:
             dur = self.unit if self.element == DIT else self.unit * weight / 100
+            # Only latch memory during the active tone — a tap that ends
+            # before the element finishes won't set memory for a repeat.
+            if dit_dn:
+                self.dit_mem = True
+            if dah_dn:
+                self.dah_mem = True
             if now - self.timer >= dur:
-                if dit_dn:
-                    self.dit_mem = True
-                if dah_dn:
-                    self.dah_mem = True
                 self.last = self.element
                 self.phase = SPACING
                 self.timer = now
@@ -231,8 +232,10 @@ class Keyer:
             return True
 
         if self.phase == SPACING:
+            # During the inter-element gap, do NOT latch paddle state into
+            # memory — only honour what was already latched during SENDING.
             if now - self.timer >= self.unit:
-                el = self._choose(dit_dn, dah_dn)
+                el = self._pick_mem()
                 if el is not None:
                     self._begin(el, now)
                     return True
@@ -243,13 +246,25 @@ class Keyer:
         return False
 
     # -- internals --
-    def _choose(self, dit_dn, dah_dn):
-        want_dit = self.dit_mem or dit_dn
-        want_dah = self.dah_mem or dah_dn
-        if want_dit:
-            self.dit_mem = False
-        if want_dah:
-            self.dah_mem = False
+    def _pick_live(self, dit_dn, dah_dn):
+        """Choose element from live paddle state (used in IDLE)."""
+        if not dit_dn and not dah_dn:
+            return None
+        if dit_dn and not dah_dn:
+            return DIT
+        if dah_dn and not dit_dn:
+            return DAH
+        # squeeze: alternate
+        if self.last is None or self.last == DAH:
+            return DIT
+        return DAH
+
+    def _pick_mem(self):
+        """Choose element from memory flags (used after SPACING)."""
+        want_dit = self.dit_mem
+        want_dah = self.dah_mem
+        self.dit_mem = False
+        self.dah_mem = False
         if not want_dit and not want_dah:
             return None
         if want_dit and not want_dah:
