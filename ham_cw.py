@@ -543,7 +543,7 @@ def main():
         tx_live  = tx_on
         rx_live  = rx_on
 
-        # Both paddles held 3 seconds -> announce IP
+        # Both paddles held 3 seconds -> announce IP (works regardless of TX)
         if dit_dn and dah_dn:
             if both_since is None:
                 both_since = time.monotonic()
@@ -560,8 +560,15 @@ def main():
         else:
             both_since = None
 
-        # Iambic keyer
-        key_flag = keyer.tick(dit_dn, dah_dn, cfg["weight"])
+        # Iambic keyer only runs when TX switch is active
+        if tx_on:
+            key_flag = keyer.tick(dit_dn, dah_dn, cfg["weight"])
+        else:
+            # TX off: silence, reset keyer so it doesn't carry state over
+            key_flag = False
+            keyer.phase = IDLE
+            keyer.dit_mem = False
+            keyer.dah_mem = False
 
         time.sleep(0.001)
 
