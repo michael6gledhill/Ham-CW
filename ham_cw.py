@@ -1,106 +1,71 @@
 #!/usr/bin/env python3
-"""ham-cw  --  Python CW iambic keyer for Raspberry Pi
-
-Hardware:
-  Paddles: common-ground, wires to GPIO (active-low with internal pull-up)
-  ReSpeaker 2-Mic HAT for audio (speaker + headphone)
-
-Default wiring (BCM numbers, avoid ReSpeaker HAT pins 2,3,17,18-21):
-  GPIO  5  <- DIT paddle   (pulled HIGH, grounded when pressed)
-  GPIO  6  <- DAH paddle   (pulled HIGH, grounded when pressed)
-  GPIO 13  <- TX switch     (pulled HIGH, grounded = TX mode)
-  GPIO 16  <- RX switch     (pulled HIGH, grounded = RX mode)
-  GPIO 22  -> PTT output    (HIGH = key radio)
-
-Usage:  python3 ham_cw.py [WPM]
-Web UI: http://<pi-ip>:8080
-"""
+"""ham-cw: Iambic CW keyer for Raspberry Pi with GPIO PWM sidetone."""
 
 import json
-import math
-import os
+import pathlib
 import signal
-import socket
 import subprocess
-import sys
-import tempfile
 import threading
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
 
-# ---------------------------------------------------------------------------
-#  Optional hardware imports (graceful degradation on dev machines)
-# ---------------------------------------------------------------------------
 try:
     import RPi.GPIO as IO
-    IO.setmode(IO.BCM)
-    IO.setwarnings(False)
-    HAS_GPIO = True
-except (ImportError, RuntimeError):
-    HAS_GPIO = False
-    print("ham-cw: RPi.GPIO not available - GPIO disabled")
-
-try:
-    import alsaaudio
-    HAS_AUDIO = True
+    _HAS_GPIO = True
 except ImportError:
-    HAS_AUDIO = False
-    print("ham-cw: alsaaudio not available - sidetone disabled")
+    IO = None
+    _HAS_GPIO = False
 
 # ---------------------------------------------------------------------------
-#  Constants
+#  Morse code table
 # ---------------------------------------------------------------------------
-CONFIG_PATH = Path.home() / ".ham-cw.conf"
-SAMPLE_RATE = 48000
-HTTP_PORT = 8080
+MORSE = {
+    'A': '.-',    'B': '-...',  'C': '-.-.',  'D': '-..',   'E': '.',
+    'F': '..-.',  'G': '--.',   'H': '....',  'I': '..',    'J': '.---',
+    'K': '-.-',   'L': '.-..',  'M': '--',    'N': '-.',    'O': '---',
+    'P': '.--.',  'Q': '--.-',  'R': '.-.',   'S': '...',   'T': '-',
+    'U': '..-',   'V': '...-',  'W': '.--',   'X': '-..-',  'Y': '-.--',
+    'Z': '--..',
+    '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
+    '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
+    '.': '.-.-.-', ',': '--..--', '?': '..--..', '/': '-..-.', '=': '-...-',
+}
+
+# ---------------------------------------------------------------------------
+#  Configuration
+# ---------------------------------------------------------------------------
+CONFIG_PATH = pathlib.Path.home() / ".ham-cw.conf"
 
 DEFAULTS = {
     "wpm": 20,
     "freq": 700,
     "weight": 300,
-    "vol_hp": 70,
-    "vol_spk": 70,
-    "pin_dit": 5,
-    "pin_dah": 6,
-    "pin_tx": 13,
-    "pin_rx": 16,
-    "pin_ptt": 22,
+    "volume": 70,
+    "pin_dit": 27,
+    "pin_dah": 22,
+    "pin_tx": 5,
+    "pin_rx": 6,
+    "pin_spk_pos": 20,
+    "pin_spk_neg": 21,
+    "pin_ptt": 16,
 }
 
-# ---------------------------------------------------------------------------
-#  Shared state  (GIL makes simple bool/int read-write safe)
-# ---------------------------------------------------------------------------
-_lock = threading.Lock()
 _config = dict(DEFAULTS)
+_lock = threading.Lock()
 _shutdown = threading.Event()
 
-key_flag = False          # True while sidetone should sound
-dit_live = False          # live paddle state for web monitor
-dah_live = False
-tx_live = False
-rx_live = False
-test_requested = False    # set by HTTP, cleared by main loop
 
-# Text send queue (protected by its own lock)
-_send_lock = threading.Lock()
-_send_queue = []
-
-# ---------------------------------------------------------------------------
-#  Config persistence
-# ---------------------------------------------------------------------------
 def _clamp(v, lo, hi):
-    return max(lo, min(hi, int(v)))
+    try:
+        return max(lo, min(hi, int(v)))
+    except (TypeError, ValueError):
+        return lo
 
 
 def load_config():
     global _config
     try:
         data = json.loads(CONFIG_PATH.read_text())
-        # Migrate old single "volume" to split vol_hp / vol_spk
-        if "volume" in data and "vol_hp" not in data:
-            data["vol_hp"] = data["volume"]
-            data["vol_spk"] = data["volume"]
         with _lock:
             for k in DEFAULTS:
                 if k in data:
@@ -125,7 +90,6 @@ def get_config():
 
 
 def apply_config(body):
-    """Parse JSON, merge into config with clamping, save, return result."""
     try:
         vals = json.loads(body)
     except (json.JSONDecodeError, TypeError):
@@ -134,571 +98,243 @@ def apply_config(body):
         if "wpm"    in vals: _config["wpm"]    = _clamp(vals["wpm"], 5, 60)
         if "freq"   in vals: _config["freq"]   = _clamp(vals["freq"], 200, 2000)
         if "weight" in vals: _config["weight"] = _clamp(vals["weight"], 200, 500)
-        if "vol_hp" in vals: _config["vol_hp"] = _clamp(vals["vol_hp"], 0, 100)
-        if "vol_spk" in vals: _config["vol_spk"] = _clamp(vals["vol_spk"], 0, 100)
-        if "pin_dit" in vals: _config["pin_dit"] = _clamp(vals["pin_dit"], 0, 27)
-        if "pin_dah" in vals: _config["pin_dah"] = _clamp(vals["pin_dah"], 0, 27)
-        if "pin_tx"  in vals: _config["pin_tx"]  = _clamp(vals["pin_tx"], 0, 27)
-        if "pin_rx"  in vals: _config["pin_rx"]  = _clamp(vals["pin_rx"], 0, 27)
-        if "pin_ptt" in vals: _config["pin_ptt"] = _clamp(vals["pin_ptt"], 0, 27)
+        if "volume" in vals: _config["volume"] = _clamp(vals["volume"], 0, 100)
+        if "pin_dit"     in vals: _config["pin_dit"]     = _clamp(vals["pin_dit"], 0, 27)
+        if "pin_dah"     in vals: _config["pin_dah"]     = _clamp(vals["pin_dah"], 0, 27)
+        if "pin_tx"      in vals: _config["pin_tx"]      = _clamp(vals["pin_tx"], 0, 27)
+        if "pin_rx"      in vals: _config["pin_rx"]      = _clamp(vals["pin_rx"], 0, 27)
+        if "pin_spk_pos" in vals: _config["pin_spk_pos"] = _clamp(vals["pin_spk_pos"], 0, 27)
+        if "pin_spk_neg" in vals: _config["pin_spk_neg"] = _clamp(vals["pin_spk_neg"], 0, 27)
+        if "pin_ptt"     in vals: _config["pin_ptt"]     = _clamp(vals["pin_ptt"], 0, 27)
         result = dict(_config)
     save_config()
-    set_system_volume(result["vol_hp"], result["vol_spk"])
     return result
 
-# ---------------------------------------------------------------------------
-#  Volume (ReSpeaker 2-Mic HAT / WM8960)
-# ---------------------------------------------------------------------------
-def set_system_volume(vol_hp, vol_spk):
-    hp_pct = f"{_clamp(vol_hp, 0, 100)}%"
-    spk_pct = f"{_clamp(vol_spk, 0, 100)}%"
-    for ctrl, pct in [("Headphone Playback Volume", hp_pct),
-                      ("Speaker Playback Volume", spk_pct),
-                      ("Playback", "100%")]:
-        subprocess.Popen(
-            ["amixer", "-c", "seeed2micvoicec", "sset", ctrl, pct],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
 
 # ---------------------------------------------------------------------------
-#  IP announcement  (hold both paddles 3 s)
+#  Iambic Keyer (Mode-B)
 # ---------------------------------------------------------------------------
-def get_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.settimeout(2)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
+class Keyer:
+    IDLE, SENDING, SPACING = 0, 1, 2
+
+    def __init__(self, cfg):
+        self.state = self.IDLE
+        self.element = None
+        self.mem = None
+        self.elapsed = 0.0
+        self.duration = 0.0
+        self.update(cfg)
+
+    def update(self, cfg):
+        dit_s = 1.2 / cfg["wpm"]
+        self.dit_len = dit_s
+        self.dah_len = dit_s * cfg["weight"] / 100.0
+        self.gap_len = dit_s
+
+    def _pick_live(self, dit, dah):
+        if dit and dah:
+            return 'dah' if self.element == 'dit' else 'dit'
+        if dit:
+            return 'dit'
+        if dah:
+            return 'dah'
         return None
 
+    def _pick_mem(self, dit, dah):
+        m = self.mem
+        self.mem = None
+        if m:
+            return m
+        return self._pick_live(dit, dah)
 
-def announce_ip():
-    ip = get_ip()
-    if ip:
-        readable = " dot ".join(" ".join(d for d in octet)
-                                for octet in ip.split("."))
-        text = f"My IP address is {readable}"
-    else:
-        text = "No network connection"
-    wav = os.path.join(tempfile.gettempdir(), "ham_cw_ip.wav")
-    subprocess.run(["espeak", "-s", "130", "-w", wav, text],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run(["aplay", wav],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    try:
-        os.remove(wav)
-    except OSError:
-        pass
-
-# ---------------------------------------------------------------------------
-#  Iambic Mode-B keyer
-# ---------------------------------------------------------------------------
-DIT, DAH = 0, 1
-IDLE, SENDING, SPACING = 0, 1, 2
-
-
-class Keyer:
-    def __init__(self, wpm):
-        self.phase = IDLE
-        self.element = None
-        self.last = None
-        self.dit_mem = False
-        self.dah_mem = False
-        self.timer = time.monotonic()
-        self.unit = 1.2 / max(5, wpm)   # dit duration in seconds
-
-    def set_wpm(self, wpm):
-        self.unit = 1.2 / max(5, min(60, wpm))
-
-    def tick(self, dit_dn, dah_dn, weight):
-        """Call every ~1 ms.  Returns True while tone should sound."""
-        now = time.monotonic()
-
-        if self.phase == IDLE:
-            # Direct paddle read — no memory needed when idle
-            el = self._pick_live(dit_dn, dah_dn)
-            if el is not None:
-                self.dit_mem = False
-                self.dah_mem = False
-                self._begin(el, now)
-                return True
-            return False
-
-        if self.phase == SENDING:
-            dur = self.unit if self.element == DIT else self.unit * weight / 100
-            # Only latch the OPPOSITE paddle into memory (for iambic squeeze).
-            # Same-paddle hold is detected via live state when spacing ends.
-            if self.element == DIT and dah_dn:
-                self.dah_mem = True
-            elif self.element == DAH and dit_dn:
-                self.dit_mem = True
-            if now - self.timer >= dur:
-                self.last = self.element
-                self.phase = SPACING
-                self.timer = now
+    def tick(self, dt, dit, dah):
+        """Advance keyer by dt seconds. Returns True if key is down."""
+        if self.state == self.IDLE:
+            nxt = self._pick_live(dit, dah)
+            if nxt is None:
                 return False
+            self.element = nxt
+            self.duration = self.dit_len if nxt == 'dit' else self.dah_len
+            self.elapsed = 0.0
+            self.state = self.SENDING
             return True
 
-        if self.phase == SPACING:
-            if now - self.timer >= self.unit:
-                # Check memory first (squeeze), then live paddles (hold)
-                el = self._pick_mem()
-                if el is None:
-                    el = self._pick_live(dit_dn, dah_dn)
-                if el is not None:
-                    self._begin(el, now)
-                    return True
-                self.phase = IDLE
-                self.last = None
+        if self.state == self.SENDING:
+            if self.element == 'dit' and dah:
+                self.mem = 'dah'
+            elif self.element == 'dah' and dit:
+                self.mem = 'dit'
+            self.elapsed += dt
+            if self.elapsed < self.duration:
+                return True
+            self.elapsed = 0.0
+            self.duration = self.gap_len
+            self.state = self.SPACING
             return False
+
+        if self.state == self.SPACING:
+            self.elapsed += dt
+            if self.elapsed < self.duration:
+                return False
+            nxt = self._pick_mem(dit, dah)
+            if nxt is None:
+                self.state = self.IDLE
+                return False
+            self.element = nxt
+            self.duration = self.dit_len if nxt == 'dit' else self.dah_len
+            self.elapsed = 0.0
+            self.state = self.SENDING
+            return True
 
         return False
 
-    # -- internals --
-    def _pick_live(self, dit_dn, dah_dn):
-        """Choose element from live paddle state (used in IDLE)."""
-        if not dit_dn and not dah_dn:
-            return None
-        if dit_dn and not dah_dn:
-            return DIT
-        if dah_dn and not dit_dn:
-            return DAH
-        # squeeze: alternate
-        if self.last is None or self.last == DAH:
-            return DIT
-        return DAH
-
-    def _pick_mem(self):
-        """Choose element from memory flags (used after SPACING)."""
-        want_dit = self.dit_mem
-        want_dah = self.dah_mem
-        self.dit_mem = False
-        self.dah_mem = False
-        if not want_dit and not want_dah:
-            return None
-        if want_dit and not want_dah:
-            return DIT
-        if want_dah and not want_dit:
-            return DAH
-        # squeeze: alternate
-        if self.last is None or self.last == DAH:
-            return DIT
-        return DAH
-
-    def _begin(self, el, now):
-        self.element = el
-        self.phase = SENDING
-        self.timer = now
 
 # ---------------------------------------------------------------------------
-#  Morse table + send_text
+#  GPIO speaker (PWM sidetone)
 # ---------------------------------------------------------------------------
-MORSE = {
-    'A': '.-',    'B': '-...',  'C': '-.-.',  'D': '-..',   'E': '.',
-    'F': '..-.',  'G': '--.',   'H': '....',  'I': '..',    'J': '.---',
-    'K': '-.-',   'L': '.-..',  'M': '--',    'N': '-.',    'O': '---',
-    'P': '.--.',  'Q': '--.-',  'R': '.-.',   'S': '...',   'T': '-',
-    'U': '..-',   'V': '...-',  'W': '.--',   'X': '-..-',  'Y': '-.--',
-    'Z': '--..',
-    '0': '-----', '1': '.----', '2': '..---', '3': '...--', '4': '....-',
-    '5': '.....', '6': '-....', '7': '--...', '8': '---..', '9': '----.',
-    '.': '.-.-.-', ',': '--..--', '?': '..--..', '/': '-..-.',
-}
+_pwm = None
+_pwm_pin = -1
 
 
-def send_text(text):
-    global key_flag
-    cfg = get_config()
-    unit = 1.2 / cfg["wpm"]
-    dah = unit * cfg["weight"] / 100
-    for ch in text.upper():
-        if ch == ' ':
-            time.sleep(unit * 7)
-            continue
-        morse = MORSE.get(ch)
-        if not morse:
-            continue
-        for i, sym in enumerate(morse):
-            key_flag = True
-            time.sleep(dah if sym == '-' else unit)
-            key_flag = False
-            if i + 1 < len(morse):
-                time.sleep(unit)
-        time.sleep(unit * 3)
-
-# ---------------------------------------------------------------------------
-#  Sidetone audio thread
-# ---------------------------------------------------------------------------
-import array as _array
-
-# Pre-computed wavetable — 2048 entries of one full sine cycle (max amplitude)
-_WAVE_LEN = 2048
-_WAVETABLE = [int(math.sin(2.0 * math.pi * i / _WAVE_LEN) * 32767)
-              for i in range(_WAVE_LEN)]
-
-# Period size for ALSA writes (1024 frames = ~21 ms at 48 kHz)
-_TONE_PERIOD = 1024
-
-
-def sidetone_thread():
-    if not HAS_AUDIO:
+def _speaker_on(pin, freq, volume):
+    global _pwm, _pwm_pin
+    if not _HAS_GPIO:
         return
-
-    # Use plughw for direct stereo output
-    # (L = headphone jack, R = speaker connector on ReSpeaker HAT)
-    devices = ["plughw:seeed2micvoicec", "plughw:1,0", "default"]
-    pcm = None
-    for dev in devices:
+    duty = max(0.0, min(50.0, volume / 2.0))
+    if _pwm is not None and _pwm_pin == pin:
         try:
-            pcm = alsaaudio.PCM(
-                type=alsaaudio.PCM_PLAYBACK,
-                device=dev,
-                channels=2,
-                rate=SAMPLE_RATE,
-                format=alsaaudio.PCM_FORMAT_S16_LE,
-                periodsize=_TONE_PERIOD,
-            )
-            print(f"ham-cw: sidetone using ALSA device '{dev}' (stereo)")
-            break
+            _pwm.ChangeFrequency(max(1, freq))
+            _pwm.ChangeDutyCycle(duty)
+            return
         except Exception:
-            pcm = None
-            continue
-    if pcm is None:
-        print("ham-cw: no audio device found - no sidetone")
-        return
+            _pwm = None
+    _speaker_off()
+    try:
+        _pwm = IO.PWM(pin, max(1, freq))
+        _pwm.start(duty)
+        _pwm_pin = pin
+    except Exception:
+        _pwm = None
 
-    # --- Pre-computed stereo ring buffer ---
-    # Mono ring holds one channel, then we interleave L+R on output.
-    ring = _array.array('h', [0]) * SAMPLE_RATE
-    ring_freq = 0
-    ring_vol = -1.0
-    ring_pos = 0
 
-    envelope = 0.0
-    RAMP_STEP = 1.0 / (SAMPLE_RATE * 0.005)  # 5 ms ramp
-    silence = bytes(_TONE_PERIOD * 4)  # stereo: 2 bytes x 2 channels x period
-    period = _TONE_PERIOD
-    sr = SAMPLE_RATE
-
-    def to_stereo(mono_arr, vl, vr):
-        """Scale mono to interleaved L+R stereo bytes with per-channel volume."""
-        st = _array.array('h', [0]) * (len(mono_arr) * 2)
-        for i in range(len(mono_arr)):
-            st[i * 2]     = int(mono_arr[i] * vl)
-            st[i * 2 + 1] = int(mono_arr[i] * vr)
-        return st.tobytes()
-
-    while not _shutdown.is_set():
-        cfg = get_config()
-        freq = cfg["freq"]
-        vol_hp  = cfg["vol_hp"]  / 100.0
-        vol_spk = cfg["vol_spk"] / 100.0
-
-        # Rebuild ring when freq changes (ring stores full-scale samples)
-        if freq != ring_freq:
-            pinc = freq * _WAVE_LEN / sr
-            wt = _WAVETABLE
-            wl = _WAVE_LEN
-            ring = _array.array('h',
-                (int(wt[int(i * pinc) % wl]) for i in range(sr)))
-            ring_freq = freq
-
-        target = 1.0 if key_flag else 0.0
-
-        # Fast path: fully silent
-        if envelope == 0.0 and target == 0.0:
-            try:
-                pcm.write(silence)
-            except Exception:
-                pass
-            ring_pos = (ring_pos + period) % sr
-            continue
-
-        # Fast path: steady tone (envelope fully on)
-        if envelope >= 1.0 and target >= 1.0:
-            pos = ring_pos
-            end = pos + period
-            if end <= sr:
-                mono = ring[pos:end]
-            else:
-                mono = ring[pos:] + ring[:end - sr]
-            ring_pos = end % sr
-            try:
-                pcm.write(to_stereo(mono, vol_hp, vol_spk))
-            except Exception:
-                pass
-            continue
-
-        # Envelope transition: per-sample ramp (only ~240 samples = 5 ms)
-        samples = _array.array('h', [0]) * period
-        env = envelope
-        rs = RAMP_STEP
-        pos = ring_pos
-        for i in range(period):
-            if env < target:
-                env = min(env + rs, 1.0)
-            elif env > target:
-                env = max(env - rs, 0.0)
-            samples[i] = int(ring[pos] * env)
-            pos += 1
-            if pos >= sr:
-                pos = 0
-
-        envelope = env
-        ring_pos = pos
+def _speaker_off():
+    global _pwm, _pwm_pin
+    if _pwm is not None:
         try:
-            pcm.write(to_stereo(samples, vol_hp, vol_spk))
+            _pwm.stop()
         except Exception:
             pass
+        _pwm = None
+        _pwm_pin = -1
 
-    pcm.close()
 
 # ---------------------------------------------------------------------------
 #  GPIO helpers
 # ---------------------------------------------------------------------------
 def setup_pins(cfg):
-    if not HAS_GPIO:
+    if not _HAS_GPIO:
         return
-    for pin in (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"]):
+    IO.setmode(IO.BCM)
+    IO.setwarnings(False)
+    for pin in [cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"]]:
         IO.setup(pin, IO.IN, pull_up_down=IO.PUD_UP)
+    IO.setup(cfg["pin_spk_pos"], IO.OUT, initial=IO.LOW)
+    IO.setup(cfg["pin_spk_neg"], IO.OUT, initial=IO.LOW)
     IO.setup(cfg["pin_ptt"], IO.OUT, initial=IO.LOW)
-    print(f"ham-cw: GPIO  DIT={cfg['pin_dit']}  DAH={cfg['pin_dah']}"
-          f"  TX={cfg['pin_tx']}  RX={cfg['pin_rx']}  PTT={cfg['pin_ptt']}")
 
 
 def read_pin(pin):
-    if not HAS_GPIO:
+    if not _HAS_GPIO:
         return False
     return IO.input(pin) == 0   # active-low
 
-# ---------------------------------------------------------------------------
-#  HTTP server
-# ---------------------------------------------------------------------------
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, format, *args):
-        pass
-
-    def _respond(self, code, body, ctype="text/plain"):
-        data = body.encode() if isinstance(body, str) else body
-        try:
-            self.send_response(code)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("Connection", "close")
-            self.end_headers()
-            self.wfile.write(data)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-    def do_GET(self):
-        if self.path == "/config":
-            self._respond(200, json.dumps(get_config()), "application/json")
-        elif self.path == "/paddles":
-            self._respond(200, json.dumps({
-                "dit": dit_live, "dah": dah_live,
-                "tx": tx_live, "rx": rx_live,
-            }), "application/json")
-        elif self.path == "/":
-            self._respond(200, HTML, "text/html; charset=utf-8")
-        else:
-            self._respond(404, "not found")
-
-    def do_POST(self):
-        global test_requested
-        length = int(self.headers.get("Content-Length", 0))
-        if length > 512:
-            self._respond(413, "too large")
-            return
-        body = self.rfile.read(length).decode() if length > 0 else ""
-
-        if self.path == "/config":
-            result = apply_config(body)
-            self._respond(200, json.dumps(result), "application/json")
-        elif self.path == "/test":
-            test_requested = True
-            self._respond(200, "ok")
-        elif self.path == "/send":
-            text = body.strip()
-            if not text:
-                self._respond(400, "empty")
-                return
-            with _send_lock:
-                if _send_queue:
-                    self._respond(503, "busy")
-                    return
-                _send_queue.append(text)
-            self._respond(200, "queued")
-        else:
-            self._respond(404, "not found")
-
-
-class ReusableHTTPServer(HTTPServer):
-    allow_reuse_address = True
-
-
-def http_thread():
-    server = ReusableHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
-    print(f"ham-cw web UI: http://0.0.0.0:{HTTP_PORT}")
-    server.serve_forever()
 
 # ---------------------------------------------------------------------------
-#  Main loop
+#  Text-to-CW element list
 # ---------------------------------------------------------------------------
-def main():
-    global key_flag, dit_live, dah_live, tx_live, rx_live, test_requested
-
-    wpm_arg = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else None
-
-    load_config()
-    if wpm_arg:
-        with _lock:
-            _config["wpm"] = _clamp(wpm_arg, 5, 60)
-    cfg = get_config()
-
-    print(f"ham-cw starting - {cfg['wpm']} WPM, {cfg['freq']} Hz, vol {cfg['volume']}%")
-
-    # GPIO
-    setup_pins(cfg)
-    cur_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"],
-                cfg["pin_ptt"])
-
-    set_system_volume(cfg["vol_hp"], cfg["vol_spk"])
-
-    # Signals
-    def on_sig(sig, frame):
-        _shutdown.set()
-    signal.signal(signal.SIGINT, on_sig)
-    signal.signal(signal.SIGTERM, on_sig)
-
-    # Threads
-    threading.Thread(target=sidetone_thread, daemon=True, name="sidetone").start()
-    threading.Thread(target=http_thread, daemon=True, name="http").start()
-
-    # Keyer
-    keyer = Keyer(cfg["wpm"])
-    last_wpm = cfg["wpm"]
-    both_since = None
-
-    while not _shutdown.is_set():
-        cfg = get_config()
-
-        # Update WPM if changed
-        if cfg["wpm"] != last_wpm:
-            keyer.set_wpm(cfg["wpm"])
-            last_wpm = cfg["wpm"]
-
-        # Hot-reload GPIO pins
-        new_pins = (cfg["pin_dit"], cfg["pin_dah"], cfg["pin_tx"], cfg["pin_rx"],
-                    cfg["pin_ptt"])
-        if new_pins != cur_pins:
-            if HAS_GPIO:
-                for p in cur_pins:
-                    if p not in new_pins:
-                        try:
-                            IO.cleanup(p)
-                        except Exception:
-                            pass
-            setup_pins(cfg)
-            cur_pins = new_pins
-
-        # Test tone from web UI
-        if test_requested:
-            test_requested = False
-            unit = 1.2 / cfg["wpm"]
-            dah = unit * cfg["weight"] / 100
-            key_flag = True;  time.sleep(unit)
-            key_flag = False; time.sleep(unit)
-            key_flag = True;  time.sleep(dah)
-            key_flag = False
+def _text_to_elements(text, cfg):
+    dit_s = 1.2 / cfg["wpm"]
+    dah_s = dit_s * cfg["weight"] / 100.0
+    gap_s = dit_s
+    els = []
+    prev_char = False
+    for ch in text.upper():
+        if ch == ' ':
+            if prev_char:
+                els.append(('off', gap_s * 4))     # word gap (7 - 3 already)
+            prev_char = False
             continue
-
-        # Queued text from web UI
-        with _send_lock:
-            queued = _send_queue.pop(0) if _send_queue else None
-        if queued:
-            send_text(queued)
+        code = MORSE.get(ch)
+        if not code:
             continue
+        if prev_char:
+            els.append(('off', gap_s * 3))          # inter-char gap
+        for j, sym in enumerate(code):
+            if j > 0:
+                els.append(('off', gap_s))           # intra-char gap
+            els.append(('on', dit_s if sym == '.' else dah_s))
+        prev_char = True
+    return els
 
-        # Read paddles (active-low)
-        dit_dn = read_pin(cfg["pin_dit"])
-        dah_dn = read_pin(cfg["pin_dah"])
-        tx_on  = read_pin(cfg["pin_tx"])
-        rx_on  = read_pin(cfg["pin_rx"])
-
-        dit_live = dit_dn
-        dah_live = dah_dn
-        tx_live  = tx_on
-        rx_live  = rx_on
-
-        # Both paddles held 3 seconds -> announce IP (works regardless of TX)
-        if dit_dn and dah_dn:
-            if both_since is None:
-                both_since = time.monotonic()
-            elif time.monotonic() - both_since >= 3.0:
-                key_flag = False
-                print("ham-cw: announcing IP address")
-                announce_ip()
-                both_since = None
-                # Wait for release
-                while (read_pin(cfg["pin_dit"]) and read_pin(cfg["pin_dah"])
-                       and not _shutdown.is_set()):
-                    time.sleep(0.01)
-                continue
-        else:
-            both_since = None
-
-        # Iambic keyer — only active when TX switch is grounded.
-        if tx_on:
-            key_flag = keyer.tick(dit_dn, dah_dn, cfg["weight"])
-        else:
-            key_flag = False
-            keyer.phase = IDLE
-            keyer.dit_mem = False
-            keyer.dah_mem = False
-
-        # PTT output — key the radio while tone is sounding
-        if HAS_GPIO:
-            IO.output(cfg["pin_ptt"], IO.HIGH if key_flag else IO.LOW)
-
-        time.sleep(0.001)
-
-    # Shutdown
-    print("\nham-cw shutting down")
-    key_flag = False
-    if HAS_GPIO:
-        IO.output(cfg["pin_ptt"], IO.LOW)
-        IO.cleanup()
 
 # ---------------------------------------------------------------------------
-#  Embedded HTML
+#  Send queue (test tone, text, IP announce)
 # ---------------------------------------------------------------------------
-HTML = r"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>ham-cw</title>
-<style>
-  body{font-family:monospace;max-width:420px;margin:2rem auto;background:#111;color:#0f0;padding:1rem}
-  h2{margin:1.2rem 0 .4rem;color:#0a0;font-size:.8rem;text-transform:uppercase;letter-spacing:.1em;border-bottom:1px solid #0a0;padding-bottom:.2rem}
-  .row{display:flex;align-items:center;gap:.6rem;margin:.4rem 0}
-  label{width:8rem;color:#080;flex-shrink:0}
-  input[type=range]{flex:1;min-width:0;accent-color:#0a0}
-  span.val{width:3.5rem;text-align:right;font-size:.9rem}
-  .num{width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit}
-  textarea{width:100%;box-sizing:border-box;background:#000;color:#0f0;border:1px solid #0a0;padding:.4rem;font:inherit;resize:vertical}
-  button{padding:.35rem 1rem;background:#0a0;color:#000;border:none;font:inherit;cursor:pointer}
-  button:active{opacity:.6}
-  .m{min-height:1.1em;font-size:.82rem;margin-top:.3rem}
-  .led{display:inline-block;padding:.3rem .7rem;border:1px solid #0a0;border-radius:.2rem;font-size:.8rem;color:#040;background:#010;margin-right:.3rem;transition:all .15s}
-  .led.on{color:#0f0;background:#040;box-shadow:0 0 6px #0f0}
-</style>
-</head>
-<body>
+_send_queue = []
+_send_ptt = False
+_sq_lock = threading.Lock()
+
+
+def _enqueue(elements, use_ptt=False):
+    global _send_ptt
+    with _sq_lock:
+        _send_queue.clear()
+        _send_queue.extend(elements)
+        _send_ptt = use_ptt
+
+
+def enqueue_test():
+    _enqueue([('on', 0.5)], use_ptt=False)
+
+
+def enqueue_text(text, cfg):
+    els = _text_to_elements(text, cfg)
+    if els:
+        _enqueue(els, use_ptt=True)
+
+
+def enqueue_ip(cfg):
+    try:
+        ip = subprocess.check_output(
+            ["hostname", "-I"], text=True, timeout=2
+        ).split()[0]
+    except Exception:
+        ip = "0.0.0.0"
+    els = _text_to_elements(ip, cfg)
+    if els:
+        _enqueue(els, use_ptt=False)
+
+
+# ---------------------------------------------------------------------------
+#  HTTP handler + embedded web UI
+# ---------------------------------------------------------------------------
+_HTML = r"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>ham-cw</title><style>
+body{background:#1a1a2e;color:#eee;font-family:sans-serif;max-width:480px;margin:0 auto;padding:1rem}
+h1{margin:0 0 .5rem;font-size:1.3rem}
+h2{margin:1rem 0 .3rem;font-size:1rem;color:#aaa;border-bottom:1px solid #333;padding-bottom:.2rem}
+.row{display:flex;align-items:center;gap:.5rem;margin:.3rem 0}
+.row label{min-width:120px;font-size:.85rem}.row input[type=range]{flex:1}
+.val{min-width:50px;text-align:right;font-size:.85rem;font-weight:bold}
+.num{width:60px;text-align:center;background:#111;color:#eee;border:1px solid #444;border-radius:4px;padding:4px}
+button{background:#16213e;color:#eee;border:1px solid #0f3460;border-radius:6px;padding:.4rem 1.2rem;cursor:pointer;font-size:.9rem}
+button:hover{background:#0f3460}
+.m{font-size:.8rem;margin:.3rem 0;min-height:1.2em}
+textarea{width:100%;background:#111;color:#eee;border:1px solid #444;border-radius:4px;padding:.4rem;font-family:monospace;resize:vertical;box-sizing:border-box}
+.pill{display:inline-block;padding:2px 10px;border-radius:10px;font-size:.8rem;font-weight:bold}
+.on{background:#0f0;color:#000}.off{background:#333;color:#666}
+</style></head><body>
 <h1 style="margin:0 0 .5rem;font-size:1.3rem">ham-cw settings</h1>
 
 <h2>Speed</h2>
@@ -725,44 +361,38 @@ HTML = r"""<!DOCTYPE html>
 
 <h2>Volume</h2>
 <div class="row">
-  <label>Headphone</label>
-  <input id="vol_hp" type="range" min="0" max="100" value="70"
-         oninput="document.getElementById('vol_hpv').textContent=this.value+'%'">
-  <span class="val" id="vol_hpv">70%</span>
-</div>
-<div class="row">
-  <label>Speaker</label>
-  <input id="vol_spk" type="range" min="0" max="100" value="70"
-         oninput="document.getElementById('vol_spkv').textContent=this.value+'%'">
-  <span class="val" id="vol_spkv">70%</span>
+  <label>Volume</label>
+  <input id="volume" type="range" min="0" max="100" value="70"
+         oninput="document.getElementById('volumev').textContent=this.value+'%'">
+  <span class="val" id="volumev">70%</span>
 </div>
 
 <h2>GPIO pins (BCM)</h2>
-<div class="row"><label>DIT paddle</label><input id="pin_dit" type="number" min="0" max="27" value="5" class="num"></div>
-<div class="row"><label>DAH paddle</label><input id="pin_dah" type="number" min="0" max="27" value="6" class="num"></div>
-<div class="row"><label>TX switch</label><input id="pin_tx" type="number" min="0" max="27" value="13" class="num"></div>
-<div class="row"><label>RX switch</label><input id="pin_rx" type="number" min="0" max="27" value="16" class="num"></div>
-<div class="row"><label>PTT output</label><input id="pin_ptt" type="number" min="0" max="27" value="18" class="num"></div>
-<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Inputs are active-low. PTT output goes HIGH when keying. Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT). Hold both paddles 3 s to announce IP.</p>
+<div class="row"><label>DIT paddle</label><input id="pin_dit" type="number" min="0" max="27" value="27" class="num"></div>
+<div class="row"><label>DAH paddle</label><input id="pin_dah" type="number" min="0" max="27" value="22" class="num"></div>
+<div class="row"><label>TX switch</label><input id="pin_tx" type="number" min="0" max="27" value="5" class="num"></div>
+<div class="row"><label>RX switch</label><input id="pin_rx" type="number" min="0" max="27" value="6" class="num"></div>
+<div class="row"><label>Speaker +</label><input id="pin_spk_pos" type="number" min="0" max="27" value="20" class="num"></div>
+<div class="row"><label>Speaker &minus;</label><input id="pin_spk_neg" type="number" min="0" max="27" value="21" class="num"></div>
+<div class="row"><label>PTT output</label><input id="pin_ptt" type="number" min="0" max="27" value="16" class="num"></div>
+<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Inputs are active-low with pull-ups. PTT goes HIGH when keying. Speaker uses PWM square wave. Hold both paddles 3&nbsp;s to send IP as CW.</p>
 
 <div class="row"><button onclick="saveAll()">Apply settings</button></div>
 <div id="sm" class="m"></div>
 
-<h2>Test</h2>
-<div class="row">
-  <button onclick="testTone()">Test tone (dit-dah)</button>
-  <button id="padBtn" onclick="togglePaddles()">Monitor paddles</button>
-</div>
-<div class="row" id="padRow" style="display:none">
-  <span class="led" id="led_dit">DIT</span>
-  <span class="led" id="led_dah">DAH</span>
-  <span class="led" id="led_tx">TX</span>
-  <span class="led" id="led_rx">RX</span>
-</div>
+<h2>Test tone</h2>
+<div class="row"><button onclick="testTone()">Test</button></div>
 <div id="testm" class="m"></div>
 
+<h2>Paddles</h2>
+<div class="row" style="gap:1rem">
+  <span>DIT <span id="dit" class="pill off">-</span></span>
+  <span>DAH <span id="dah" class="pill off">-</span></span>
+  <span id="txrx" class="pill off">RX</span>
+</div>
+
 <h2>Send CW</h2>
-<textarea id="txt" rows="3" placeholder="Text to send (Ctrl+Enter)"></textarea>
+<textarea id="txt" rows="3" placeholder="Text to send (letters, numbers, punctuation)"></textarea>
 <div class="row"><button onclick="sendText()">Send</button></div>
 <div id="tm" class="m"></div>
 
@@ -778,9 +408,8 @@ fetch('/config').then(r=>r.json()).then(d=>{
   set('wpm',d.wpm,'wpmv');
   set('freq',d.freq,'freqv');
   set('weight',d.weight,'weightv',v=>(v/100).toFixed(1)+'x');
-  set('vol_hp',d.vol_hp,'vol_hpv',v=>v+'%');
-  set('vol_spk',d.vol_spk,'vol_spkv',v=>v+'%');
-  ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
+  set('volume',d.volume,'volumev',v=>v+'%');
+  ['pin_dit','pin_dah','pin_tx','pin_rx','pin_spk_pos','pin_spk_neg','pin_ptt'].forEach(k=>{
     var el=document.getElementById(k);
     if(el&&d[k]!==undefined)el.value=d[k];
   });
@@ -792,10 +421,11 @@ async function saveAll(){
     wpm:parseInt(document.getElementById('wpm').value),
     freq:parseInt(document.getElementById('freq').value),
     weight:parseInt(document.getElementById('weight').value),
-    vol_hp:parseInt(document.getElementById('vol_hp').value),
-    vol_spk:parseInt(document.getElementById('vol_spk').value),
+    volume:parseInt(document.getElementById('volume').value),
     pin_dit:pin('pin_dit'),pin_dah:pin('pin_dah'),
-    pin_tx:pin('pin_tx'),pin_rx:pin('pin_rx'),pin_ptt:pin('pin_ptt')
+    pin_tx:pin('pin_tx'),pin_rx:pin('pin_rx'),
+    pin_spk_pos:pin('pin_spk_pos'),pin_spk_neg:pin('pin_spk_neg'),
+    pin_ptt:pin('pin_ptt')
   });
   try{
     var r=await fetch('/config',{method:'POST',headers:{'Content-Type':'application/json'},body:body});
@@ -807,11 +437,9 @@ async function saveAll(){
       document.getElementById('freqv').textContent=d.freq;
       document.getElementById('weight').value=d.weight;
       document.getElementById('weightv').textContent=(d.weight/100).toFixed(1)+'x';
-      document.getElementById('vol_hp').value=d.vol_hp;
-      document.getElementById('vol_hpv').textContent=d.vol_hp+'%';
-      document.getElementById('vol_spk').value=d.vol_spk;
-      document.getElementById('vol_spkv').textContent=d.vol_spk+'%';
-      ['pin_dit','pin_dah','pin_tx','pin_rx','pin_ptt'].forEach(k=>{
+      document.getElementById('volume').value=d.volume;
+      document.getElementById('volumev').textContent=d.volume+'%';
+      ['pin_dit','pin_dah','pin_tx','pin_rx','pin_spk_pos','pin_spk_neg','pin_ptt'].forEach(k=>{
         if(d[k]!==undefined)document.getElementById(k).value=d[k];
       });
       m('sm','Settings applied',true);
@@ -832,39 +460,199 @@ async function sendText(){
   m('tm','Sending...',true);
   try{
     var r=await fetch('/send',{method:'POST',headers:{'Content-Type':'text/plain'},body:t});
-    m('tm',r.ok?'Queued':(r.status===503?'Busy - retry':'Error '+r.status),r.ok);
+    m('tm',r.ok?'Queued':'Error '+r.status,r.ok);
   }catch(e){m('tm',''+e,false);}
 }
 
-document.getElementById('txt').addEventListener('keydown',e=>{
-  if(e.key==='Enter'&&e.ctrlKey)sendText();
-});
+(function poll(){
+  fetch('/paddles').then(r=>r.json()).then(d=>{
+    function p(id,v){var e=document.getElementById(id);e.className='pill '+(v?'on':'off');e.textContent=v?'ON':'-';}
+    p('dit',d.dit);
+    p('dah',d.dah);
+    var tx=document.getElementById('txrx');
+    tx.className='pill '+(d.tx?'on':'off');
+    tx.textContent=d.tx?'TX':'RX';
+  }).catch(()=>{});
+  setTimeout(poll,200);
+})();
+</script></body></html>"""
 
-var padTimer=null;
-function togglePaddles(){
-  if(padTimer){
-    clearInterval(padTimer);padTimer=null;
-    document.getElementById('padRow').style.display='none';
-    document.getElementById('padBtn').textContent='Monitor paddles';
-    return;
-  }
-  document.getElementById('padRow').style.display='flex';
-  document.getElementById('padBtn').textContent='Stop monitoring';
-  padTimer=setInterval(pollPaddles,80);
-}
-async function pollPaddles(){
-  try{
-    var r=await fetch('/paddles');var d=await r.json();
-    ['dit','dah','tx','rx'].forEach(k=>{
-      var el=document.getElementById('led_'+k);
-      if(d[k])el.classList.add('on');else el.classList.remove('on');
-    });
 
-  }catch(e){}
-}
-</script>
-</body>
-</html>"""
+class Handler(BaseHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+    def _headers(self, code=200, ct="application/json"):
+        self.send_response(code)
+        self.send_header("Content-Type", ct)
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+
+    def do_GET(self):
+        if self.path == "/":
+            self._headers(ct="text/html")
+            self.wfile.write(_HTML.encode())
+        elif self.path == "/config":
+            self._headers()
+            self.wfile.write(json.dumps(get_config()).encode())
+        elif self.path == "/paddles":
+            cfg = get_config()
+            self._headers()
+            self.wfile.write(json.dumps({
+                "dit": read_pin(cfg["pin_dit"]),
+                "dah": read_pin(cfg["pin_dah"]),
+                "tx":  read_pin(cfg["pin_tx"]),
+            }).encode())
+        else:
+            self.send_error(404)
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length) if length else b""
+        if self.path == "/config":
+            result = apply_config(body)
+            self._headers()
+            self.wfile.write(json.dumps(result).encode())
+        elif self.path == "/test":
+            enqueue_test()
+            self._headers()
+            self.wfile.write(b'{"ok":true}')
+        elif self.path == "/send":
+            text = body.decode("utf-8", errors="replace").strip()
+            if text:
+                enqueue_text(text, get_config())
+            self._headers()
+            self.wfile.write(b'{"ok":true}')
+        else:
+            self.send_error(404)
+
+
+# ---------------------------------------------------------------------------
+#  Main
+# ---------------------------------------------------------------------------
+def main():
+    load_config()
+    cfg = get_config()
+
+    # GPIO
+    setup_pins(cfg)
+    cur_pins = tuple(cfg[k] for k in [
+        "pin_dit", "pin_dah", "pin_tx", "pin_rx",
+        "pin_spk_pos", "pin_spk_neg", "pin_ptt"])
+
+    # Signals
+    def on_sig(sig, frame):
+        _shutdown.set()
+    signal.signal(signal.SIGINT, on_sig)
+    signal.signal(signal.SIGTERM, on_sig)
+
+    # HTTP server
+    srv = HTTPServer(("", 8080), Handler)
+    srv.allow_reuse_address = True
+    t = threading.Thread(target=srv.serve_forever, daemon=True)
+    t.start()
+    print("ham-cw: http server on :8080")
+
+    # Keyer
+    keyer = Keyer(cfg)
+    DT = 0.001
+    prev_key = False
+    prev_ptt = False
+    both_time = 0.0
+
+    # Send-queue state
+    sq_action = None
+    sq_end = 0.0
+
+    try:
+        while not _shutdown.is_set():
+            now = time.monotonic()
+            cfg = get_config()
+            keyer.update(cfg)
+
+            # Hot-reload GPIO pins
+            new_pins = tuple(cfg[k] for k in [
+                "pin_dit", "pin_dah", "pin_tx", "pin_rx",
+                "pin_spk_pos", "pin_spk_neg", "pin_ptt"])
+            if new_pins != cur_pins:
+                _speaker_off()
+                if _HAS_GPIO:
+                    IO.cleanup()
+                setup_pins(cfg)
+                cur_pins = new_pins
+                prev_key = False
+                prev_ptt = False
+
+            # Read inputs
+            dit = read_pin(cfg["pin_dit"])
+            dah = read_pin(cfg["pin_dah"])
+            tx_mode = read_pin(cfg["pin_tx"])
+
+            # Hold both paddles 3 s -> announce IP as CW
+            if dit and dah:
+                both_time += DT
+                if both_time >= 3.0:
+                    both_time = 0.0
+                    enqueue_ip(cfg)
+            else:
+                both_time = 0.0
+
+            # Process send queue
+            if sq_action is not None and now >= sq_end:
+                sq_action = None
+            if sq_action is None:
+                with _sq_lock:
+                    if _send_queue:
+                        act, dur = _send_queue.pop(0)
+                        sq_action = act
+                        sq_end = now + dur
+
+            # Determine key state and PTT desire
+            if sq_action is not None:
+                key_down = (sq_action == 'on')
+                ptt = key_down and _send_ptt and tx_mode
+            elif tx_mode:
+                key_down = keyer.tick(DT, dit, dah)
+                ptt = key_down
+            else:
+                key_down = False
+                ptt = False
+                if keyer.state != Keyer.IDLE:
+                    keyer.state = Keyer.IDLE
+                    keyer.mem = None
+
+            # Update speaker
+            if key_down and not prev_key:
+                _speaker_on(cfg["pin_spk_pos"], cfg["freq"], cfg["volume"])
+            elif not key_down and prev_key:
+                _speaker_off()
+            prev_key = key_down
+
+            # Update PTT
+            if ptt != prev_ptt:
+                if _HAS_GPIO:
+                    IO.output(cfg["pin_ptt"], IO.HIGH if ptt else IO.LOW)
+                prev_ptt = ptt
+
+            # Sleep remainder of tick
+            elapsed = time.monotonic() - now
+            remaining = DT - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+
+    except KeyboardInterrupt:
+        pass
+    finally:
+        _speaker_off()
+        if _HAS_GPIO:
+            try:
+                IO.output(cfg["pin_ptt"], IO.LOW)
+            except Exception:
+                pass
+            IO.cleanup()
+        srv.shutdown()
+        print("\nham-cw: stopped.")
+
 
 if __name__ == "__main__":
     main()

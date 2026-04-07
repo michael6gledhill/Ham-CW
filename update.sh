@@ -19,12 +19,12 @@ else
 fi
 
 # 2. Install Python dependencies (only if missing)
-for pkg in python3-alsaaudio espeak; do
+for pkg in python3-rpi.gpio; do
     dpkg -s "$pkg" &>/dev/null || NEED_INSTALL=1
 done
 if [ "${NEED_INSTALL:-0}" = "1" ]; then
     echo "[ham-cw] installing dependencies..."
-    sudo apt-get install -y --no-install-recommends python3-alsaaudio espeak
+    sudo apt-get install -y --no-install-recommends python3-rpi.gpio
 fi
 
 # 3. Update systemd service, daemon-reload, enable, restart

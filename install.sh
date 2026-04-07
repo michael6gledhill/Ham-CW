@@ -13,7 +13,7 @@ echo "=== ham-cw installer ==="
 # 1. System packages
 echo "[ham-cw] installing dependencies..."
 sudo apt-get update -qq
-sudo apt-get install -y --no-install-recommends python3-alsaaudio espeak git
+sudo apt-get install -y --no-install-recommends python3-rpi.gpio git
 
 # 2. GPIO group
 if ! groups "$USER" | grep -q gpio; then
@@ -30,12 +30,7 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# 4. ALSA config
-if [ -f "$INSTALL_DIR/asoundrc" ]; then
-    cp "$INSTALL_DIR/asoundrc" "$HOME/.asoundrc"
-fi
-
-# 5. Systemd service
+# 4. Systemd service
 echo "[ham-cw] installing systemd service..."
 sudo cp "$INSTALL_DIR/ham-cw.service" /etc/systemd/system/ham-cw.service
 sudo systemctl daemon-reload

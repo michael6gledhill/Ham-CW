@@ -1,6 +1,6 @@
 [Unit]
 Description=ham-cw iambic CW keyer
-After=local-fs.target sound.target
+After=local-fs.target
 
 [Service]
 Type=simple
