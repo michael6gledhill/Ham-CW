@@ -333,10 +333,14 @@ def sidetone_thread():
         print("ham-cw: no audio device found - no sidetone")
         return
 
-    silence = bytes(PERIOD_SIZE * 2)
     phase = 0.0
     last_freq = 0
     step = 0.0
+    # Smooth envelope: 0.0 = silent, 1.0 = full volume
+    envelope = 0.0
+    # Ramp time in seconds — 5 ms eliminates clicks
+    RAMP_TIME = 0.005
+    ramp_step = 1.0 / (SAMPLE_RATE * RAMP_TIME)
 
     while not _shutdown.is_set():
         cfg = get_config()
@@ -346,24 +350,23 @@ def sidetone_thread():
             step = 2.0 * math.pi * freq / SAMPLE_RATE
             last_freq = freq
 
-        if key_flag:
-            buf = bytearray(PERIOD_SIZE * 2)
-            for i in range(PERIOD_SIZE):
-                val = int(math.sin(phase) * 32767 * vol)
-                struct.pack_into('<h', buf, i * 2, max(-32768, min(32767, val)))
-                phase += step
-                if phase >= 2 * math.pi:
-                    phase -= 2 * math.pi
-            try:
-                pcm.write(bytes(buf))
-            except Exception:
-                pass
-        else:
-            phase = 0.0
-            try:
-                pcm.write(silence)
-            except Exception:
-                pass
+        target = 1.0 if key_flag else 0.0
+        buf = bytearray(PERIOD_SIZE * 2)
+        for i in range(PERIOD_SIZE):
+            # Ramp envelope toward target
+            if envelope < target:
+                envelope = min(envelope + ramp_step, 1.0)
+            elif envelope > target:
+                envelope = max(envelope - ramp_step, 0.0)
+            val = int(math.sin(phase) * 32767 * vol * envelope)
+            struct.pack_into('<h', buf, i * 2, max(-32768, min(32767, val)))
+            phase += step
+            if phase >= 2 * math.pi:
+                phase -= 2 * math.pi
+        try:
+            pcm.write(bytes(buf))
+        except Exception:
+            pass
 
     pcm.close()
 
