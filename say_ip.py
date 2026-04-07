@@ -28,8 +28,10 @@ def speak(text):
 def main():
     ip = get_ip()
     if ip:
-        # Replace dots with " dot " so espeak reads each octet clearly
-        readable = ip.replace(".", " dot ")
+        # Spell out each digit so espeak reads clearly
+        # e.g. "192.168.1.42" -> "1 9 2  dot  1 6 8  dot  1  dot  4 2"
+        parts = ip.split(".")
+        readable = " dot ".join(" ".join(d for d in octet) for octet in parts)
         speak(f"My IP address is {readable}")
     else:
         speak("No network connection")
