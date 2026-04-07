@@ -4,9 +4,10 @@ Generates a clean sine-wave tone on the Pi 4's built-in 3.5mm TRRS
 jack.  Left channel carries the tone to the Baofeng mic input; right
 channel is silent.
 
-Uses a pre-computed one-second ring buffer at full scale.  Volume is
-applied at output time so changes are instant without rebuilding the
-ring.  A 5 ms raised-cosine envelope ramp eliminates key clicks.
+Uses a pre-computed one-second ring buffer.  The steady-state fast
+path writes pre-interleaved stereo bytes directly — no per-sample
+Python loops.  An 8 ms raised-cosine envelope ramp eliminates key
+clicks.
 """
 
 import array as _array
@@ -26,7 +27,7 @@ except ImportError:
 SAMPLE_RATE = 48000
 PERIOD_SIZE = 512          # ~10.7 ms per block — low latency, fine on Pi 4
 CHANNELS = 2               # stereo (L = tone, R = silent)
-RAMP_MS = 5                # envelope ramp duration
+RAMP_MS = 8                # envelope ramp duration (ms)
 _WAVE_LEN = 4096           # sine look-up table length
 
 # Pre-computed full-scale sine table  (-32767 .. +32767)
@@ -48,9 +49,11 @@ class AudioEngine:
         self._lock = threading.Lock()
         self._shutdown = threading.Event()
 
-        # Ring buffer (rebuilt when freq changes)
+        # Ring buffers (rebuilt when freq or volume changes)
         self._ring = None
+        self._stereo_bytes = None
         self._ring_freq = -1
+        self._ring_vol = -1.0
 
         self._thread = None
 
@@ -81,20 +84,38 @@ class AudioEngine:
 
     # -- internals --------------------------------------------------------
 
-    def _rebuild_ring(self, freq):
-        """Pre-compute one second of full-scale sine at *freq* Hz."""
+    def _rebuild_ring(self, freq, vol):
+        """Pre-compute one second of audio at *freq* Hz scaled to *vol*.
+
+        Builds two buffers:
+        - mono full-scale ring (used during envelope ramp transitions)
+        - pre-interleaved stereo bytes with volume applied (steady-state
+          fast path — zero per-sample Python work)
+        """
         sr = SAMPLE_RATE
         wt = _WAVETABLE
         wl = _WAVE_LEN
         pinc = freq * wl / sr
-        self._ring = _array.array('h',
+
+        # Mono full-scale ring (for envelope transitions)
+        mono = _array.array('h',
             (wt[int(i * pinc) % wl] for i in range(sr)))
+        self._ring = mono
+
+        # Pre-interleaved stereo bytes: L = tone * vol, R = 0
+        st = _array.array('h', [0]) * (sr * 2)
+        for i in range(sr):
+            st[i * 2] = round(mono[i] * vol)
+        self._stereo_bytes = st.tobytes()
+
         self._ring_freq = freq
+        self._ring_vol = vol
 
     def _run(self):                             # noqa: C901  (audio loop)
         # Open ALSA PCM device — try headphone jack first, fall back to default
         device = None
         for dev in ('plughw:Headphones', 'plughw:headphones',
+                     'hw:2,0', 'plughw:2,0',
                      'plughw:0,0', 'default'):
             try:
                 pcm = alsaaudio.PCM(
@@ -126,9 +147,9 @@ class AudioEngine:
                 freq = self._freq
                 vol = self._volume
 
-            # Rebuild ring when frequency changes
-            if freq != self._ring_freq:
-                self._rebuild_ring(freq)
+            # Rebuild ring when frequency or volume changes
+            if freq != self._ring_freq or vol != self._ring_vol:
+                self._rebuild_ring(freq, vol)
             ring = self._ring
 
             target = 1.0 if self.key_down else 0.0
@@ -146,24 +167,21 @@ class AudioEngine:
             if envelope >= 1.0 and target >= 1.0:
                 pos = ring_pos
                 end = pos + period
+                bpos = pos * 4       # 2 channels * 2 bytes/sample
+                bend = end * 4
                 if end <= sr:
-                    mono = ring[pos:end]
+                    chunk = self._stereo_bytes[bpos:bend]
                 else:
-                    mono = ring[pos:] + ring[:end - sr]
+                    chunk = (self._stereo_bytes[bpos:]
+                             + self._stereo_bytes[:bend - sr * 4])
                 ring_pos = end % sr
-
-                # Left channel = tone * volume, right = 0
-                st = _array.array('h', [0]) * (period * 2)
-                for i in range(period):
-                    st[i * 2] = int(mono[i] * vol)
-                    # st[i*2+1] stays 0
                 try:
-                    pcm.write(st.tobytes())
+                    pcm.write(chunk)
                 except Exception:
                     pass
                 continue
 
-            # -- envelope transition (5 ms ramp) --------------------------
+            # -- envelope transition (8 ms raised-cosine ramp) -----------
             st = _array.array('h', [0]) * (period * 2)
             pos = ring_pos
             for i in range(period):
@@ -171,7 +189,7 @@ class AudioEngine:
                     envelope = min(envelope + ramp_step, 1.0)
                 elif envelope > target:
                     envelope = max(envelope - ramp_step, 0.0)
-                st[i * 2] = int(ring[pos] * envelope * vol)
+                st[i * 2] = round(ring[pos] * envelope * vol)
                 pos += 1
                 if pos >= sr:
                     pos = 0
