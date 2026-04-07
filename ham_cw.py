@@ -339,20 +339,21 @@ def sidetone_thread():
     if not HAS_AUDIO:
         return
 
-    # Try devices in order: default (dmix), then direct hardware
-    devices = ["default", "plughw:seeed2micvoicec", "plughw:1,0"]
+    # Use plughw for direct stereo output
+    # (L = headphone jack, R = speaker connector on ReSpeaker HAT)
+    devices = ["plughw:seeed2micvoicec", "plughw:1,0", "default"]
     pcm = None
     for dev in devices:
         try:
             pcm = alsaaudio.PCM(
                 type=alsaaudio.PCM_PLAYBACK,
                 device=dev,
-                channels=1,
+                channels=2,
                 rate=SAMPLE_RATE,
                 format=alsaaudio.PCM_FORMAT_S16_LE,
                 periodsize=_TONE_PERIOD,
             )
-            print(f"ham-cw: sidetone using ALSA device '{dev}'")
+            print(f"ham-cw: sidetone using ALSA device '{dev}' (stereo)")
             break
         except Exception:
             pcm = None
@@ -361,10 +362,8 @@ def sidetone_thread():
         print("ham-cw: no audio device found - no sidetone")
         return
 
-    # --- Pre-computed ring buffer approach ---
-    # A 1-second ring of tone samples at the current freq/vol.
-    # For any integer Hz frequency, SAMPLE_RATE samples = exact whole cycles,
-    # so the ring wraps seamlessly with no click.
+    # --- Pre-computed stereo ring buffer ---
+    # Mono ring holds one channel, then we interleave L+R on output.
     ring = _array.array('h', [0]) * SAMPLE_RATE
     ring_freq = 0
     ring_vol = -1.0
@@ -372,9 +371,17 @@ def sidetone_thread():
 
     envelope = 0.0
     RAMP_STEP = 1.0 / (SAMPLE_RATE * 0.005)  # 5 ms ramp
-    silence = bytes(_TONE_PERIOD * 2)
+    silence = bytes(_TONE_PERIOD * 4)  # stereo: 2 bytes x 2 channels x period
     period = _TONE_PERIOD
     sr = SAMPLE_RATE
+
+    def to_stereo(mono_arr):
+        """Duplicate mono array to interleaved L+R stereo bytes."""
+        st = _array.array('h', [0]) * (len(mono_arr) * 2)
+        for i in range(len(mono_arr)):
+            st[i * 2] = mono_arr[i]
+            st[i * 2 + 1] = mono_arr[i]
+        return st.tobytes()
 
     while not _shutdown.is_set():
         cfg = get_config()
@@ -407,12 +414,12 @@ def sidetone_thread():
             pos = ring_pos
             end = pos + period
             if end <= sr:
-                buf = ring[pos:end].tobytes()
+                mono = ring[pos:end]
             else:
-                buf = (ring[pos:] + ring[:end - sr]).tobytes()
+                mono = ring[pos:] + ring[:end - sr]
             ring_pos = end % sr
             try:
-                pcm.write(buf)
+                pcm.write(to_stereo(mono))
             except Exception:
                 pass
             continue
@@ -435,7 +442,7 @@ def sidetone_thread():
         envelope = env
         ring_pos = pos
         try:
-            pcm.write(samples.tobytes())
+            pcm.write(to_stereo(samples))
         except Exception:
             pass
 
