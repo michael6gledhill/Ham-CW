@@ -55,25 +55,25 @@
 <h2>GPIO pins (BCM)</h2>
 <div class="row">
   <label>DIT paddle</label>
-  <input id="pin_dit" type="number" min="0" max="27" value="12" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+  <input id="pin_dit" type="number" min="0" max="27" value="5" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
 <div class="row">
   <label>DAH paddle</label>
-  <input id="pin_dah" type="number" min="0" max="27" value="13" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+  <input id="pin_dah" type="number" min="0" max="27" value="6" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
 <div class="row">
   <label>TX switch</label>
-  <input id="pin_tx" type="number" min="0" max="27" value="2" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+  <input id="pin_tx" type="number" min="0" max="27" value="13" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
 <div class="row">
   <label>SPK switch</label>
-  <input id="pin_spk" type="number" min="0" max="27" value="3" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+  <input id="pin_spk" type="number" min="0" max="27" value="16" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
 <div class="row">
   <label>PTT output</label>
-  <input id="pin_ptt" type="number" min="0" max="27" value="18" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
+  <input id="pin_ptt" type="number" min="0" max="27" value="26" style="width:3.5rem;background:#000;color:#0f0;border:1px solid #0a0;padding:.3rem .4rem;font:inherit">
 </div>
-<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Pin changes take effect after restarting the service.</p>
+<p style="font-size:.75rem;color:#060;margin:.3rem 0 0">Paddles &amp; switch are active-low (grounded when pressed). Avoid GPIO 2,3,17,18-21 (ReSpeaker HAT). Pin changes need a service restart.</p>
 
 <div class="row"><button onclick="saveAll()">Apply settings</button></div>
 <div id="sm" class="m"></div>

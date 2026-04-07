@@ -1,11 +1,20 @@
 //! ham-cw — Minimal CW iambic keyer for Raspberry Pi Zero
 //!
-//! Wiring (BCM numbers):
-//!   GPIO 12  ← DIT paddle (active-high, internal pull-down)
-//!   GPIO 13  ← DAH paddle (active-high, internal pull-down)
-//!   GPIO  2  ← TX switch  (active-high ⇒ transmit enabled)
-//!   GPIO  3  ← SPK switch
-//!   GPIO 18  → PTT output (high = transmit)
+//! Hardware:
+//!   - Paddles: common-ground, left/right wires to GPIO (active-low with pull-up)
+//!   - SPDT switch: center→GND, left→TX pin, right→SPK pin (active-low)
+//!   - ReSpeaker 2-Mic HAT for audio (speaker + headphones)
+//!   - PTT output for radio (active-high) — future
+//!
+//! Default wiring (BCM numbers, chosen to avoid ReSpeaker HAT pins):
+//!   GPIO  5  ← DIT paddle  (pulled HIGH, grounded when pressed)
+//!   GPIO  6  ← DAH paddle  (pulled HIGH, grounded when pressed)
+//!   GPIO 13  ← TX switch   (pulled HIGH, grounded = TX mode)
+//!   GPIO 16  ← SPK switch  (pulled HIGH, grounded = SPK mode)
+//!   GPIO 26  → PTT output  (high = transmit) — not yet used
+//!
+//! Pins used by ReSpeaker 2-Mic HAT (DO NOT USE):
+//!   GPIO 2,3 (I2C), GPIO 17 (button), GPIO 18,19,20,21 (I2S audio)
 //!
 //! Usage:  ham-cw [WPM]   e.g.  ham-cw 20
 //! Web UI: http://<pi-ip>:8080
@@ -33,11 +42,12 @@ const DEFAULT_FREQ:   u32 = 700;   // sidetone Hz
 const DEFAULT_WEIGHT: u32 = 300;   // dash length = weight/100 × dit (300 = 3×)
 const DEFAULT_VOL:    u32 = 70;    // system volume 0–100
 
-const DEFAULT_PIN_DIT:  u8 = 12;
-const DEFAULT_PIN_DAH:  u8 = 13;
-const DEFAULT_PIN_TX:   u8 = 2;
-const DEFAULT_PIN_SPK:  u8 = 3;
-const DEFAULT_PIN_PTT:  u8 = 18;
+// Default GPIO pins — chosen to avoid ReSpeaker 2-Mic HAT (I2C 2/3, I2S 18-21, btn 17)
+const DEFAULT_PIN_DIT:  u8 = 5;
+const DEFAULT_PIN_DAH:  u8 = 6;
+const DEFAULT_PIN_TX:   u8 = 13;
+const DEFAULT_PIN_SPK:  u8 = 16;
+const DEFAULT_PIN_PTT:  u8 = 26;
 
 #[cfg(feature = "sidetone")]
 const SAMPLE_RATE:   u32 = 44_100;
@@ -223,11 +233,22 @@ fn run_sidetone(gs: Arc<GpioState>, cfg: Arc<Mutex<Config>>) {
     use alsa::pcm::{Access, Format, HwParams, PCM};
     use alsa::{Direction, ValueOr};
 
-    let pcm = match PCM::new("default", Direction::Playback, false) {
-        Ok(p)  => p,
-        Err(e) => {
-            eprintln!("ham-cw: audio init failed ({e}) – no sidetone");
-            return;
+    // Try ReSpeaker HAT first, then fall back to default ALSA device
+    let device_names = ["plughw:seeed2micvoicec", "plughw:1,0", "default"];
+    let pcm = {
+        let mut found = None;
+        for dev in &device_names {
+            match PCM::new(dev, Direction::Playback, false) {
+                Ok(p) => { println!("ham-cw: sidetone using ALSA device '{dev}'"); found = Some(p); break; }
+                Err(_) => continue,
+            }
+        }
+        match found {
+            Some(p) => p,
+            None => {
+                eprintln!("ham-cw: no audio device found – no sidetone");
+                return;
+            }
         }
     };
 
@@ -531,21 +552,22 @@ fn main() {
     let init_cfg = Config::default();
     let init_cfg = { let mut c = init_cfg; c.wpm = wpm; c };
 
+    // Paddles + switch: pulled HIGH, grounded when pressed/active
     let dit_pin: InputPin = gpio.get(init_cfg.pin_dit)
         .expect("DIT pin unavailable")
-        .into_input_pulldown();
+        .into_input_pullup();
 
     let dah_pin: InputPin = gpio.get(init_cfg.pin_dah)
         .expect("DAH pin unavailable")
-        .into_input_pulldown();
+        .into_input_pullup();
 
     let tx_sw: InputPin = gpio.get(init_cfg.pin_tx)
         .expect("TX switch pin unavailable")
-        .into_input_pulldown();
+        .into_input_pullup();
 
     let _spk_sw: InputPin = gpio.get(init_cfg.pin_spk)
         .expect("SPK switch pin unavailable")
-        .into_input_pulldown();
+        .into_input_pullup();
 
     let mut ptt: OutputPin = gpio.get(init_cfg.pin_ptt)
         .expect("PTT pin unavailable")
@@ -627,10 +649,10 @@ fn main() {
             continue;
         }
 
-        // ── Iambic paddle ────────────────────────────────────────────────────
-        let dit_dn = dit_pin.is_high();
-        let dah_dn = dah_pin.is_high();
-        let tx_on  = tx_sw.is_high();
+        // ── Iambic paddle (active-low: pressed = grounded = LOW) ──────────
+        let dit_dn = dit_pin.is_low();
+        let dah_dn = dah_pin.is_low();
+        let tx_on  = tx_sw.is_low();
 
         // Publish live paddle state for HTTP /paddles endpoint
         gpio_st.dit.store(dit_dn, Ordering::Relaxed);
