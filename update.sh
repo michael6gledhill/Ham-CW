@@ -27,12 +27,7 @@ if [ "${NEED_INSTALL:-0}" = "1" ]; then
     sudo apt-get install -y --no-install-recommends python3-alsaaudio espeak
 fi
 
-# 3. Install ALSA dmix config
-if [ -f "$INSTALL_DIR/asoundrc" ]; then
-    cp "$INSTALL_DIR/asoundrc" "$HOME/.asoundrc"
-fi
-
-# 4. Update systemd service, daemon-reload, enable, restart
+# 3. Update systemd service, daemon-reload, enable, restart
 echo "[ham-cw] updating systemd service..."
 sudo cp "$INSTALL_DIR/ham-cw.service" /etc/systemd/system/ham-cw.service
 sudo systemctl daemon-reload
