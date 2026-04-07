@@ -26,6 +26,12 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
+# Stop the old Rust binary if it's running
+if systemctl is-active --quiet "$SERVICE" 2>/dev/null; then
+    echo "[ham-cw update] stopping old service..."
+    sudo systemctl stop "$SERVICE"
+fi
+
 echo "[ham-cw update] installing Python dependencies..."
 sudo apt-get install -y --no-install-recommends python3-alsaaudio espeak 2>/dev/null || true
 

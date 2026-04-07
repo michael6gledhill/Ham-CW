@@ -316,11 +316,14 @@ def sidetone_thread():
     pcm = None
     for dev in devices:
         try:
-            pcm = alsaaudio.PCM(type=alsaaudio.PCM_PLAYBACK, device=dev)
-            pcm.setchannels(1)
-            pcm.setrate(SAMPLE_RATE)
-            pcm.setformat(alsaaudio.PCM_FORMAT_S16_LE)
-            pcm.setperiodsize(PERIOD_SIZE)
+            pcm = alsaaudio.PCM(
+                type=alsaaudio.PCM_PLAYBACK,
+                device=dev,
+                channels=1,
+                rate=SAMPLE_RATE,
+                format=alsaaudio.PCM_FORMAT_S16_LE,
+                periodsize=PERIOD_SIZE,
+            )
             print(f"ham-cw: sidetone using ALSA device '{dev}'")
             break
         except Exception:
@@ -385,7 +388,7 @@ def read_pin(pin):
 #  HTTP server
 # ---------------------------------------------------------------------------
 class Handler(BaseHTTPRequestHandler):
-    def log_message(self, fmt, *args):
+    def log_message(self, format, *args):
         pass
 
     def _respond(self, code, body, ctype="text/plain"):
@@ -441,8 +444,12 @@ class Handler(BaseHTTPRequestHandler):
             self._respond(404, "not found")
 
 
+class ReusableHTTPServer(HTTPServer):
+    allow_reuse_address = True
+
+
 def http_thread():
-    server = HTTPServer(("0.0.0.0", HTTP_PORT), Handler)
+    server = ReusableHTTPServer(("0.0.0.0", HTTP_PORT), Handler)
     print(f"ham-cw web UI: http://0.0.0.0:{HTTP_PORT}")
     server.serve_forever()
 
