@@ -598,15 +598,9 @@ def main():
         else:
             both_since = None
 
-        # Iambic keyer only runs when TX switch is active
-        if tx_on:
-            key_flag = keyer.tick(dit_dn, dah_dn, cfg["weight"])
-        else:
-            # TX off: silence, reset keyer so it doesn't carry state over
-            key_flag = False
-            keyer.phase = IDLE
-            keyer.dit_mem = False
-            keyer.dah_mem = False
+        # Iambic keyer — always runs so paddles always produce sidetone.
+        # TX/RX switch state is tracked for the web UI and future PTT use.
+        key_flag = keyer.tick(dit_dn, dah_dn, cfg["weight"])
 
         time.sleep(0.001)
 
