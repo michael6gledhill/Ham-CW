@@ -76,7 +76,10 @@ impl Config {
     }
     fn to_json(&self) -> String {
         format!(
-            "{\"wpm\":{},\"freq\":{},\"weight\":{},\"volume\":{},\"pin_dit\":{},\"pin_dah\":{},\"pin_tx\":{},\"pin_spk\":{},\"pin_ptt\":{}}",
+            concat!(
+                r#"{{"wpm":{},"freq":{},"weight":{},"volume":{}"#,
+                r#","pin_dit":{},"pin_dah":{},"pin_tx":{},"pin_spk":{},"pin_ptt":{}}}"#
+            ),
             self.wpm, self.freq, self.weight, self.volume,
             self.pin_dit, self.pin_dah, self.pin_tx, self.pin_spk, self.pin_ptt
         )
@@ -234,8 +237,8 @@ fn run_sidetone(keyed: Arc<AtomicBool>, cfg: Arc<Mutex<Config>>) {
         hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest)?;
         hwp.set_format(Format::s16())?;
         hwp.set_access(Access::RWInterleaved)?;
-        hwp.set_period_size(PERIOD_FRAMES as i64, ValueOr::Nearest)?;
-        hwp.set_buffer_size(PERIOD_FRAMES as i64 * 4)?;
+        hwp.set_period_size(PERIOD_FRAMES as i32, ValueOr::Nearest)?;
+        hwp.set_buffer_size(PERIOD_FRAMES as i32 * 4)?;
         pcm.hw_params(&hwp)?;
         pcm.start()
     };
@@ -521,11 +524,8 @@ fn main() {
     let key_flag = Arc::new(AtomicBool::new(false));
 
     // ── Shared runtime config ────────────────────────────────────────────────
-    let cfg_mtx: Arc<Mutex<Config>> = Arc::new(Mutex::new({
-        let mut c = init_cfg;
-        set_system_volume(c.volume);
-        c
-    }));
+    set_system_volume(init_cfg.volume);
+    let cfg_mtx: Arc<Mutex<Config>> = Arc::new(Mutex::new(init_cfg));
 
     #[cfg(feature = "sidetone")]
     {
