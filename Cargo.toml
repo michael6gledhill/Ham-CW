@@ -11,9 +11,11 @@ default   = ["sidetone"]
 sidetone  = ["dep:alsa"]
 
 [dependencies]
-rppal = "0.18"
-libc  = "0.2"
-alsa  = { version = "0.9", optional = true }
+rppal      = "0.18"
+libc       = "0.2"
+serde      = { version = "1", features = ["derive"] }
+serde_json = "1"
+alsa       = { version = "0.9", optional = true }
 
 # Release profile tuned for Pi Zero (small binary, low RAM)
 [profile.release]

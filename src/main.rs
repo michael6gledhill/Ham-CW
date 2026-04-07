@@ -20,6 +20,7 @@
 //! Web UI: http://<pi-ip>:8080
 
 use rppal::gpio::{Gpio, InputPin, OutputPin};
+use serde::{Deserialize, Serialize};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -64,7 +65,7 @@ const SAMPLE_RATE:   u32 = 44_100;
 const PERIOD_FRAMES: u32 = 256;   // ~5.8 ms latency at 44100 Hz
 
 /// Runtime-adjustable settings, shared between HTTP thread and keyer loop.
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Config {
     wpm:    u32,  // 5–60
     freq:   u32,  // sidetone Hz, 200–2000
@@ -94,35 +95,36 @@ impl Config {
         Duration::from_millis(dit_ms * self.weight as u64 / 100)
     }
     fn to_json(&self) -> String {
-        format!(
-            concat!(
-                r#"{{"wpm":{},"freq":{},"weight":{},"volume":{}"#,
-                r#","pin_dit":{},"pin_dah":{},"pin_tx":{},"pin_spk":{},"pin_ptt":{}}}"#
-            ),
-            self.wpm, self.freq, self.weight, self.volume,
-            self.pin_dit, self.pin_dah, self.pin_tx, self.pin_spk, self.pin_ptt
-        )
+        serde_json::to_string(self).unwrap_or_default()
     }
-    /// Save config to disk as JSON.
+    /// Save config to disk as pretty-printed JSON.
     fn save(&self) {
         let path = config_path();
-        if let Err(e) = fs::write(&path, self.to_json()) {
-            eprintln!("ham-cw: could not save config to {}: {e}", path.display());
+        match serde_json::to_string_pretty(self) {
+            Ok(json) => {
+                if let Err(e) = fs::write(&path, json) {
+                    eprintln!("ham-cw: could not save config to {}: {e}", path.display());
+                }
+            }
+            Err(e) => eprintln!("ham-cw: config serialize error: {e}"),
         }
     }
 
     /// Load config from disk, falling back to defaults for missing fields.
     fn load() -> Self {
-        let base = Config::default_cfg();
         let path = config_path();
         match fs::read_to_string(&path) {
             Ok(s) => {
                 println!("ham-cw: loaded config from {}", path.display());
-                parse_config_json(&s, &base)
+                serde_json::from_str(&s).unwrap_or_else(|e| {
+                    eprintln!("ham-cw: config parse error: {e}, using defaults");
+                    Config::default_cfg()
+                })
             }
-            Err(_) => base,
+            Err(_) => Config::default_cfg(),
         }
-    }}
+    }
+}
 
 
 
@@ -398,31 +400,21 @@ fn send_text(text: &str, ptt: &mut OutputPin, cfg: &Config, gs: &Arc<GpioState>)
 const HTML: &str = include_str!("index.html");
 const UPDATE_SH: &str = include_str!("../update.sh");
 
-/// Parse JSON config body — no crate needed.
-/// Accepts any subset of {"wpm":N,"freq":N,"weight":N,"volume":N}.
+/// Parse JSON config body, merging with the existing config as baseline.
 fn parse_config_json(s: &str, base: &Config) -> Config {
-    fn extract(s: &str, key: &str) -> Option<u32> {
-        let idx = s.find(key)?;
-        let rest = &s[idx + key.len()..];
-        let colon = rest.find(':')? + 1;
-        let digits = rest[colon..].trim_start();
-        let end = digits.find(|c: char| !c.is_ascii_digit()).unwrap_or(digits.len());
-        digits[..end].parse().ok()
+    let mut cfg = base.clone();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(s) {
+        if let Some(n) = v.get("wpm").and_then(|x| x.as_u64())    { cfg.wpm    = (n as u32).max(5).min(60); }
+        if let Some(n) = v.get("freq").and_then(|x| x.as_u64())   { cfg.freq   = (n as u32).max(200).min(2000); }
+        if let Some(n) = v.get("weight").and_then(|x| x.as_u64()) { cfg.weight = (n as u32).max(200).min(500); }
+        if let Some(n) = v.get("volume").and_then(|x| x.as_u64()) { cfg.volume = (n as u32).min(100); }
+        if let Some(n) = v.get("pin_dit").and_then(|x| x.as_u64()) { cfg.pin_dit = (n as u8).min(27); }
+        if let Some(n) = v.get("pin_dah").and_then(|x| x.as_u64()) { cfg.pin_dah = (n as u8).min(27); }
+        if let Some(n) = v.get("pin_tx").and_then(|x| x.as_u64())  { cfg.pin_tx  = (n as u8).min(27); }
+        if let Some(n) = v.get("pin_spk").and_then(|x| x.as_u64()) { cfg.pin_spk = (n as u8).min(27); }
+        if let Some(n) = v.get("pin_ptt").and_then(|x| x.as_u64()) { cfg.pin_ptt = (n as u8).min(27); }
     }
-    fn pin(s: &str, key: &str, cur: u8) -> u8 {
-        extract(s, key).map(|v| v.min(27) as u8).unwrap_or(cur)
-    }
-    Config {
-        wpm:    extract(s, "\"wpm\"").map(|v| v.max(5).min(60)).unwrap_or(base.wpm),
-        freq:   extract(s, "\"freq\"").map(|v| v.max(200).min(2000)).unwrap_or(base.freq),
-        weight: extract(s, "\"weight\"").map(|v| v.max(200).min(500)).unwrap_or(base.weight),
-        volume: extract(s, "\"volume\"").map(|v| v.min(100)).unwrap_or(base.volume),
-        pin_dit: pin(s, "\"pin_dit\"", base.pin_dit),
-        pin_dah: pin(s, "\"pin_dah\"", base.pin_dah),
-        pin_tx:  pin(s, "\"pin_tx\"",  base.pin_tx),
-        pin_spk: pin(s, "\"pin_spk\"", base.pin_spk),
-        pin_ptt: pin(s, "\"pin_ptt\"", base.pin_ptt),
-    }
+    cfg
 }
 
 fn http_respond(mut stream: TcpStream, status: &str, body: &str, ctype: &str) {
@@ -524,8 +516,11 @@ fn handle_connection(stream: TcpStream, tx: &SyncSender<String>, cfg_mtx: &Arc<M
         new_cfg.save();
         let mut json = new_cfg.to_json();
         if pins_changed {
-            // Insert restart flag into JSON so the frontend can show a notice
-            json = format!(r#"{{"restart_needed":true,{}"#, &json[1..]);
+            // Insert restart_needed flag into the JSON response
+            if let Ok(mut v) = serde_json::from_str::<serde_json::Value>(&json) {
+                v.as_object_mut().unwrap().insert("restart_needed".into(), serde_json::Value::Bool(true));
+                json = v.to_string();
+            }
         }
         *cfg_mtx.lock().unwrap() = new_cfg;
         set_system_volume(vol);
