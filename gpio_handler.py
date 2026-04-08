@@ -1,12 +1,13 @@
-"""GPIO handler using pigpio (DMA-timed PWM).
+"""GPIO handler using pigpio (DMA-timed PWM) for Pi 4.
 
-pigpio produces rock-solid PWM via DMA, eliminating the jitter and
-terrible audio quality of RPi.GPIO's software PWM.
+Features:
+    - Interrupt-driven switch handling via pigpio callbacks
+    - Hardware debouncing via glitch filter (50 ms)
+    - Wired-OR PTT: INPUT hi-Z  or  OUTPUT LOW  -- NEVER HIGH
+    - DMA-timed PWM for clean speaker audio
 
-Requires the pigpio daemon: sudo systemctl enable pigpiod
+Requires the pigpio daemon:  sudo systemctl enable pigpiod
 """
-
-import time
 
 try:
     import pigpio
@@ -17,7 +18,7 @@ except Exception:
     _pi = None
     HAS_GPIO = False
 
-_SW_DEBOUNCE = 0.25     # seconds
+_GLITCH_US = 50_000      # 50 ms glitch filter for switch debounce
 
 
 class GpioHandler:
@@ -26,67 +27,88 @@ class GpioHandler:
     def __init__(self):
         self._pins = {}
         self._tone_on = False
-        self.on_tone_adjust = None
-        self.on_wpm_adjust = None
-
-        self._tone_up_last = False
-        self._tone_down_last = False
-        self._wpm_up_last = False
-        self._wpm_down_last = False
-        self._tone_up_time = 0.0
-        self._tone_down_time = 0.0
-        self._wpm_up_time = 0.0
-        self._wpm_down_time = 0.0
+        self._callbacks = []
+        self.on_param_cycle = None      # () -> None
+        self.on_param_adjust = None     # (direction: int) -> None
 
     def setup(self, cfg):
         """Configure all GPIO pins from *cfg* dict."""
         self.speaker_off()
+        self._cancel_callbacks()
         self._pins = {k: v for k, v in cfg.items() if k.startswith('pin_')}
 
         if not HAS_GPIO:
             return
 
-        # Inputs (pull-up, active low)
-        for key in ('pin_dit', 'pin_dah', 'pin_mode_text', 'pin_mode_tx',
-                     'pin_tone_up', 'pin_tone_down',
-                     'pin_wpm_up', 'pin_wpm_down'):
+        # -- Paddle inputs (pull-up, active low) -------------------------
+        for key in ('pin_dit', 'pin_dah'):
             _pi.set_mode(self._pins[key], pigpio.INPUT)
             _pi.set_pull_up_down(self._pins[key], pigpio.PUD_UP)
 
-        # Speaker output
+        # -- Mode switch (pull-up; LOW = text mode) -----------------------
+        _pi.set_mode(self._pins['pin_mode'], pigpio.INPUT)
+        _pi.set_pull_up_down(self._pins['pin_mode'], pigpio.PUD_UP)
+
+        # -- Parameter-select switch (cycles on any edge) -----------------
+        pin_sel = self._pins['pin_sel']
+        _pi.set_mode(pin_sel, pigpio.INPUT)
+        _pi.set_pull_up_down(pin_sel, pigpio.PUD_UP)
+        _pi.set_glitch_filter(pin_sel, _GLITCH_US)
+        self._callbacks.append(
+            _pi.callback(pin_sel, pigpio.EITHER_EDGE, self._on_sel))
+
+        # -- Adjust up / down (falling-edge trigger) ----------------------
+        for key, direction in (('pin_adj_up', 1), ('pin_adj_down', -1)):
+            pin = self._pins[key]
+            _pi.set_mode(pin, pigpio.INPUT)
+            _pi.set_pull_up_down(pin, pigpio.PUD_UP)
+            _pi.set_glitch_filter(pin, _GLITCH_US)
+            self._callbacks.append(
+                _pi.callback(pin, pigpio.FALLING_EDGE,
+                             lambda g, l, t, d=direction: self._on_adj(d)))
+
+        # -- Speaker output -----------------------------------------------
         _pi.set_mode(self._pins['pin_spk'], pigpio.OUTPUT)
         _pi.write(self._pins['pin_spk'], 0)
 
-        # Speaker ground (tie low)
+        # -- Speaker ground (tie low) ------------------------------------
         _pi.set_mode(self._pins['pin_spk_gnd'], pigpio.OUTPUT)
         _pi.write(self._pins['pin_spk_gnd'], 0)
 
-        # Text-mode ground pin (default high = not grounded)
-        _pi.set_mode(self._pins['pin_text_ground'], pigpio.OUTPUT)
-        _pi.write(self._pins['pin_text_ground'], 1)
-
-        self._tone_up_last = self._read('pin_tone_up')
-        self._tone_down_last = self._read('pin_tone_down')
-        self._wpm_up_last = self._read('pin_wpm_up')
-        self._wpm_down_last = self._read('pin_wpm_down')
+        # -- PTT: start in hi-Z ------------------------------------------
+        self.set_ptt(False)
 
     def cleanup(self):
+        """Release GPIO resources."""
         self.speaker_off()
-        if HAS_GPIO and _pi.connected:
-            # Leave pins in a safe state but don't disconnect — daemon
-            # stays running for next launch.
+        self.set_ptt(False)
+        self._cancel_callbacks()
+
+    def _cancel_callbacks(self):
+        for cb in self._callbacks:
             try:
-                _pi.write(self._pins.get('pin_text_ground', 0), 1)
+                cb.cancel()
             except Exception:
                 pass
+        self._callbacks.clear()
 
-    # -- input reads ------------------------------------------------------
+    # -- Switch callbacks -------------------------------------------------
+
+    def _on_sel(self, gpio, level, tick):
+        if self.on_param_cycle:
+            self.on_param_cycle()
+
+    def _on_adj(self, direction):
+        if self.on_param_adjust:
+            self.on_param_adjust(direction)
+
+    # -- Input reads ------------------------------------------------------
 
     def _read(self, key):
         if not HAS_GPIO:
             return False
         try:
-            return _pi.read(self._pins[key]) == 0
+            return _pi.read(self._pins[key]) == 0   # active low
         except Exception:
             return False
 
@@ -97,81 +119,45 @@ class GpioHandler:
         return self._read('pin_dah')
 
     def read_mode(self):
-        if self._read('pin_mode_text'):
-            return 'text'
-        if self._read('pin_mode_tx'):
-            return 'tx'
-        return 'idle'
+        """Return 'text' if mode switch is grounded, else 'tx'."""
+        return 'text' if self._read('pin_mode') else 'tx'
 
-    # -- pin scanning (for Detect feature) --------------------------------
+    # -- PTT (wired-OR: hi-Z  or  OUTPUT LOW  --  NEVER HIGH) ------------
 
-    def scan_pins(self):
+    def set_ptt(self, active):
+        """Ground PTT line (active=True) or release to hi-Z.
+
+        SAFETY: GPIO_PTT must NEVER drive HIGH.
+        Two states only:
+            INPUT + PUD_OFF   -> high impedance (idle)
+            OUTPUT LOW        -> pull PTT line to ground (transmit)
+        """
         if not HAS_GPIO:
-            return []
-
-        from config import OUTPUT_PINS
-        output_nums = set()
-        for key in OUTPUT_PINS:
-            if key in self._pins:
-                output_nums.add(self._pins[key])
-
-        active = []
-        for pin in range(2, 28):
-            if pin in output_nums:
-                continue
-            try:
+            return
+        pin = self._pins.get('pin_ptt')
+        if pin is None:
+            return
+        try:
+            if active:
+                _pi.set_mode(pin, pigpio.OUTPUT)
+                _pi.write(pin, 0)
+            else:
                 _pi.set_mode(pin, pigpio.INPUT)
-                _pi.set_pull_up_down(pin, pigpio.PUD_UP)
-                if _pi.read(pin) == 0:
-                    active.append(pin)
-            except Exception:
-                continue
-        return active
+                _pi.set_pull_up_down(pin, pigpio.PUD_OFF)
+        except Exception:
+            pass
 
-    # -- switch polling ---------------------------------------------------
-
-    def poll_switches(self):
-        now = time.monotonic()
-
-        cur = self._read('pin_tone_up')
-        if cur and not self._tone_up_last and (now - self._tone_up_time) > _SW_DEBOUNCE:
-            self._tone_up_time = now
-            if self.on_tone_adjust:
-                self.on_tone_adjust(1)
-        self._tone_up_last = cur
-
-        cur = self._read('pin_tone_down')
-        if cur and not self._tone_down_last and (now - self._tone_down_time) > _SW_DEBOUNCE:
-            self._tone_down_time = now
-            if self.on_tone_adjust:
-                self.on_tone_adjust(-1)
-        self._tone_down_last = cur
-
-        cur = self._read('pin_wpm_up')
-        if cur and not self._wpm_up_last and (now - self._wpm_up_time) > _SW_DEBOUNCE:
-            self._wpm_up_time = now
-            if self.on_wpm_adjust:
-                self.on_wpm_adjust(1)
-        self._wpm_up_last = cur
-
-        cur = self._read('pin_wpm_down')
-        if cur and not self._wpm_down_last and (now - self._wpm_down_time) > _SW_DEBOUNCE:
-            self._wpm_down_time = now
-            if self.on_wpm_adjust:
-                self.on_wpm_adjust(-1)
-        self._wpm_down_last = cur
-
-    # -- speaker (DMA-timed PWM via pigpio) -------------------------------
+    # -- Speaker (DMA-timed PWM via pigpio) -------------------------------
 
     def speaker_on(self, freq):
-        """Start or update tone.  pigpio DMA PWM — clean, jitter-free."""
+        """Start or update tone at *freq* Hz."""
         if not HAS_GPIO:
             return
         pin = self._pins['pin_spk']
         freq = max(1, min(40000, int(freq)))
         try:
             _pi.set_PWM_frequency(pin, freq)
-            _pi.set_PWM_dutycycle(pin, 128)   # 50% of 0-255 range
+            _pi.set_PWM_dutycycle(pin, 128)      # 50 % duty
             self._tone_on = True
         except Exception:
             pass
@@ -185,12 +171,31 @@ class GpioHandler:
             pass
         self._tone_on = False
 
-    # -- text-mode ground pin ---------------------------------------------
+    # -- Pin scanning (detect feature) ------------------------------------
 
-    def set_text_ground(self, active):
+    def scan_pins(self):
+        """Return list of GPIO pins currently pulled LOW."""
         if not HAS_GPIO:
-            return
-        try:
-            _pi.write(self._pins['pin_text_ground'], 0 if active else 1)
-        except Exception:
-            pass
+            return []
+
+        from config import OUTPUT_PINS
+        skip = set()
+        for key in OUTPUT_PINS:
+            if key in self._pins:
+                skip.add(self._pins[key])
+        ptt = self._pins.get('pin_ptt')
+        if ptt is not None:
+            skip.add(ptt)
+
+        active = []
+        for pin in range(2, 28):
+            if pin in skip:
+                continue
+            try:
+                _pi.set_mode(pin, pigpio.INPUT)
+                _pi.set_pull_up_down(pin, pigpio.PUD_UP)
+                if _pi.read(pin) == 0:
+                    active.append(pin)
+            except Exception:
+                continue
+        return active

@@ -1,6 +1,6 @@
-"""Configuration for ham-cw keyer.
+"""Configuration for ham-cw keyer (Pi 4 + touchscreen).
 
-Stores all settings in config.json next to the application.
+Stores settings in config.json next to the application.
 Thread-safe reads and writes.
 """
 
@@ -12,37 +12,42 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'config.json')
 
 DEFAULTS = {
-    'wpm': 20,
-    'freq': 700,
-    'freq_step': 50,
-    'wpm_step': 1,
-    'pin_spk': 20,
-    'pin_spk_gnd': 21,
-    'pin_dit': 27,
-    'pin_dah': 22,
-    'pin_mode_text': 26,
-    'pin_mode_tx': 12,
-    'pin_text_ground': 16,
-    'pin_tone_up': 5,
-    'pin_tone_down': 6,
-    'pin_wpm_up': 13,
-    'pin_wpm_down': 19,
+    'wpm':         20,
+    'freq':        700,
+    'volume':      70,
+    'freq_step':   50,
+    'wpm_step':    1,
+    'volume_step': 5,
+    'pin_dit':      27,
+    'pin_dah':      22,
+    'pin_spk':      20,
+    'pin_spk_gnd':  21,
+    'pin_ptt':      16,
+    'pin_mode':     26,
+    'pin_sel':      13,
+    'pin_adj_up':   5,
+    'pin_adj_down': 6,
 }
 
-OUTPUT_PINS = {'pin_spk', 'pin_spk_gnd', 'pin_text_ground'}
+OUTPUT_PINS = {'pin_spk', 'pin_spk_gnd'}    # pin_ptt managed separately (hi-Z)
+
+PARAMS = ['wpm', 'freq', 'volume']
 
 LIMITS = {
-    'wpm': (5, 50),
-    'freq': (200, 2000),
-    'freq_step': (1, 100),
-    'wpm_step': (1, 10),
+    'wpm':    (5, 50),
+    'freq':   (200, 2000),
+    'volume': (0, 100),
 }
 
-FREQ_STEP_OPTIONS = [1, 5, 10, 15, 25, 50, 100]
-WPM_STEP_OPTIONS = [1, 2, 5]
+STEPS = {
+    'wpm':    'wpm_step',
+    'freq':   'freq_step',
+    'volume': 'volume_step',
+}
 
 _lock = threading.Lock()
 _config = dict(DEFAULTS)
+_selected = 0       # index into PARAMS
 
 
 def load_config():
@@ -89,19 +94,32 @@ def update_config(updates):
 
 
 def adjust_param(param, direction):
-    """Adjust a parameter by its configured step size."""
+    """Adjust *param* by its configured step in *direction* (+1 or -1)."""
     with _lock:
-        if param == 'freq':
-            step = _config.get('freq_step', 50)
-            lo, hi = LIMITS['freq']
-            _config['freq'] = max(lo, min(hi, _config['freq'] + step * direction))
-            val = _config['freq']
-        elif param == 'wpm':
-            step = _config.get('wpm_step', 1)
-            lo, hi = LIMITS['wpm']
-            _config['wpm'] = max(lo, min(hi, _config['wpm'] + step * direction))
-            val = _config['wpm']
-        else:
+        step_key = STEPS.get(param)
+        if not step_key:
             return _config.get(param)
+        step = _config.get(step_key, 1)
+        lo, hi = LIMITS[param]
+        _config[param] = max(lo, min(hi, _config[param] + step * direction))
+        val = _config[param]
     save_config()
     return val
+
+
+def get_selected_param():
+    with _lock:
+        return PARAMS[_selected]
+
+
+def cycle_selected_param():
+    global _selected
+    with _lock:
+        _selected = (_selected + 1) % len(PARAMS)
+        return PARAMS[_selected]
+
+
+def set_selected_param(index):
+    global _selected
+    with _lock:
+        _selected = index % len(PARAMS)

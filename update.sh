@@ -18,11 +18,13 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# 2. Install Python dependencies (only if missing)
-dpkg -s python3-pigpio &>/dev/null || {
-    echo "[ham-cw] installing dependencies..."
-    sudo apt-get install -y --no-install-recommends python3-pigpio pigpio
-}
+# 2. Install dependencies (only if missing)
+for pkg in python3-pigpio pigpio python3-alsaaudio python3-tk; do
+    dpkg -s "$pkg" &>/dev/null || {
+        echo "[ham-cw] installing $pkg..."
+        sudo apt-get install -y --no-install-recommends "$pkg"
+    }
+done
 
 # Ensure pigpio daemon is running
 sudo systemctl enable pigpiod 2>/dev/null
@@ -34,4 +36,4 @@ sudo cp "$INSTALL_DIR/ham-cw.service" /etc/systemd/system/ham-cw.service
 sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE"
 sudo systemctl restart "$SERVICE"
-echo "[ham-cw] done — service restarted."
+echo "[ham-cw] done -- service restarted."
