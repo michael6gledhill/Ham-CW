@@ -14,7 +14,7 @@ echo "=== ham-cw installer ==="
 echo "[ham-cw] installing dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
-    python3-rpi.gpio python3-alsaaudio python3-tk git
+    python3-rpi.gpio git
 
 # 2. GPIO group
 if ! groups "$USER" | grep -q gpio; then
@@ -38,7 +38,8 @@ sudo systemctl daemon-reload
 sudo systemctl enable "$SERVICE"
 sudo systemctl restart "$SERVICE"
 
+IP=$(hostname -I 2>/dev/null | awk '{print $1}')
 echo ""
 echo "=== ham-cw installed ==="
-echo "Touchscreen GUI will appear on next reboot."
+echo "Web UI: http://${IP:-<pi-ip>}"
 echo "Update: curl -fsSL https://raw.githubusercontent.com/michael6gledhill/Ham-CW/main/update.sh | bash"

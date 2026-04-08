@@ -1,118 +1,100 @@
-"""Configuration management for ham-cw keyer.
+"""Configuration for ham-cw keyer.
 
-Stores all settings and GPIO pin assignments.  Thread-safe access via
-get_config() / apply_config().  Persists to ~/.ham-cw.conf as JSON.
+Stores all settings (WPM, tone frequency, GPIO pin assignments) in a
+JSON file next to the application.  Thread-safe reads and writes.
 """
 
 import json
-import pathlib
+import os
 import threading
 
-CONFIG_PATH = pathlib.Path.home() / ".ham-cw.conf"
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'config.json')
 
-# ---------------------------------------------------------------------------
-#  Defaults & limits
-# ---------------------------------------------------------------------------
 DEFAULTS = {
-    # Keyer settings
-    "wpm": 20,              # Words per minute
-    "freq": 700,            # Sidetone frequency (Hz)
-    "volume": 70,           # Output volume 0-100
-    "weight": 300,          # Dash weight (300 = standard 3:1 ratio)
-
-    # GPIO pins (BCM numbering)
-    "pin_dit": 27,          # DIT paddle input  (active-low, pull-up)
-    "pin_dah": 22,          # DAH paddle input  (active-low, pull-up)
-    "pin_sw_up": 5,         # Switch A: increment position
-    "pin_sw_down": 6,       # Switch A: decrement position
-    "pin_sw_sel": 13,       # Switch B: parameter select (cycle on flip)
-    "pin_spk": 20,          # Speaker + (PWM output)
-    "pin_spk_gnd": 21,      # Speaker - (held LOW as ground ref)
-    "pin_ptt": 16,          # PTT output (HIGH when keying)
+    'wpm': 20,
+    'freq': 700,
+    'pin_spk': 20,
+    'pin_spk_gnd': 21,
+    'pin_dit': 27,
+    'pin_dah': 22,
+    'pin_mode': 26,
+    'pin_tx': 16,
+    'pin_tone_up': 5,
+    'pin_tone_down': 6,
+    'pin_wpm_up': 13,
+    'pin_wpm_down': 19,
 }
 
 LIMITS = {
-    "wpm":    (5, 40),
-    "freq":   (300, 1000),
-    "volume": (0, 100),
-    "weight": (200, 500),
+    'wpm': (5, 50),
+    'freq': (200, 2000),
 }
 
-# Step sizes used by the physical adjustment switch
 STEPS = {
-    "wpm": 1,
-    "freq": 50,
-    "volume": 5,
+    'wpm': 1,
+    'freq': 50,
 }
 
-# Parameters that Switch B cycles through
-PARAMS = ["wpm", "freq", "volume"]
-
-# ---------------------------------------------------------------------------
-#  Thread-safe config store
-# ---------------------------------------------------------------------------
-_config = dict(DEFAULTS)
 _lock = threading.Lock()
-
-
-def _clamp(val, lo, hi):
-    try:
-        return max(lo, min(hi, int(val)))
-    except (TypeError, ValueError):
-        return lo
+_config = dict(DEFAULTS)
 
 
 def load_config():
-    """Load configuration from disk, merging into defaults."""
+    """Load configuration from disk, merging with defaults."""
     global _config
-    try:
-        data = json.loads(CONFIG_PATH.read_text())
-        with _lock:
-            for k in DEFAULTS:
-                if k in data:
-                    _config[k] = data[k]
-        print(f"ham-cw: loaded config from {CONFIG_PATH}")
-    except (FileNotFoundError, json.JSONDecodeError, OSError) as e:
-        print(f"ham-cw: using defaults ({e})")
+    with _lock:
+        try:
+            with open(CONFIG_PATH) as f:
+                saved = json.load(f)
+            merged = dict(DEFAULTS)
+            merged.update(saved)
+            _config = merged
+        except (FileNotFoundError, json.JSONDecodeError):
+            _config = dict(DEFAULTS)
 
 
 def save_config():
-    """Persist current config to disk."""
+    """Save current configuration to disk."""
     with _lock:
-        data = dict(_config)
+        cfg = dict(_config)
     try:
-        CONFIG_PATH.write_text(json.dumps(data, indent=2))
+        with open(CONFIG_PATH, 'w') as f:
+            json.dump(cfg, f, indent=2)
     except OSError as e:
-        print(f"ham-cw: save error: {e}")
+        print(f"ham-cw: failed to save config: {e}")
 
 
 def get_config():
-    """Return a snapshot of the current config dict."""
+    """Return a snapshot of the current configuration."""
     with _lock:
         return dict(_config)
 
 
-def apply_config(vals):
-    """Merge *vals* into config with clamping.  Saves and returns result."""
+def update_config(updates):
+    """Update config with a dict of new values."""
     with _lock:
-        for key, (lo, hi) in LIMITS.items():
-            if key in vals:
-                _config[key] = _clamp(vals[key], lo, hi)
-        for key in DEFAULTS:
-            if key.startswith("pin_") and key in vals:
-                _config[key] = _clamp(vals[key], 0, 27)
-        result = dict(_config)
+        for key, val in updates.items():
+            if key not in DEFAULTS:
+                continue
+            if key.startswith('pin_'):
+                v = int(val)
+                if 0 <= v <= 27:
+                    _config[key] = v
+            elif key in LIMITS:
+                lo, hi = LIMITS[key]
+                _config[key] = max(lo, min(hi, int(val)))
     save_config()
-    return result
 
 
 def adjust_param(param, direction):
-    """Adjust *param* by one step.  *direction* is +1 or -1.
-    Returns the new value."""
-    step = STEPS.get(param, 1)
-    lo, hi = LIMITS.get(param, (0, 100))
+    """Adjust a parameter by one step.  Returns the new value."""
     with _lock:
-        _config[param] = _clamp(_config[param] + step * direction, lo, hi)
+        if param not in STEPS:
+            return _config.get(param)
+        step = STEPS[param]
+        lo, hi = LIMITS[param]
+        _config[param] = max(lo, min(hi, _config[param] + step * direction))
         val = _config[param]
     save_config()
     return val

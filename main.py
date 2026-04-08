@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
-"""ham-cw: Iambic CW keyer for Raspberry Pi 4.
+"""ham-cw: Iambic CW keyer for Raspberry Pi Zero.
 
 Wires together:
-    config          - persistent settings & pin mapping
-    keyer_engine    - iambic Mode-B state machine
-    gpio_handler    - paddle / switch inputs, PWM speaker, PTT output
-    audio_engine    - ALSA sine-wave output to 3.5 mm TRRS
-    gui             - tkinter touchscreen UI (optional)
+    config       - persistent settings & pin mapping
+    keyer_engine - iambic Mode-B state machine
+    gpio_handler - paddle/switch inputs, PWM speaker, TX output
+    web_server   - HTTP web interface
 """
 
-import os
 import signal
 import subprocess
 import threading
@@ -18,24 +16,33 @@ import time
 import config
 from keyer_engine import Keyer, text_to_elements
 from gpio_handler import GpioHandler
-from audio_engine import AudioEngine
+from web_server import WebServer
 
 # ---------------------------------------------------------------------------
-#  Shared application state (read by GUI, written by keyer loop)
+#  Shared state (read by web API, written by keyer loop)
 # ---------------------------------------------------------------------------
 class _State:
     key_down = False
     dit = False
     dah = False
-    selected_param = 'wpm'
+    mode = 'paddle'
+    sending = False
 
 _state = _State()
 
 # ---------------------------------------------------------------------------
-#  Send queue (test tone, text CW, IP announce)
+#  Module-level singletons
+# ---------------------------------------------------------------------------
+_gpio = GpioHandler()
+_shutdown = threading.Event()
+
+# ---------------------------------------------------------------------------
+#  Send queue
 # ---------------------------------------------------------------------------
 _send_queue = []
 _sq_lock = threading.Lock()
+
+WEIGHT = 300    # standard 3:1 dah/dit ratio
 
 
 def _enqueue(elements):
@@ -50,9 +57,14 @@ def _enqueue_test():
 
 def _enqueue_text(text):
     cfg = config.get_config()
-    els = text_to_elements(text, cfg['wpm'], cfg['weight'])
+    els = text_to_elements(text, cfg['wpm'], WEIGHT)
     if els:
         _enqueue(els)
+
+
+def _stop_send():
+    with _sq_lock:
+        _send_queue.clear()
 
 
 def _enqueue_ip():
@@ -63,95 +75,58 @@ def _enqueue_ip():
     except Exception:
         ip = '0'
     cfg = config.get_config()
-    els = text_to_elements(ip, cfg['wpm'], cfg['weight'])
+    els = text_to_elements(ip, cfg['wpm'], WEIGHT)
     if els:
         _enqueue(els)
 
 
 # ---------------------------------------------------------------------------
-#  Public "app" interface consumed by the GUI
+#  Web API callbacks
 # ---------------------------------------------------------------------------
-def get_config():
-    return config.get_config()
+def _get_status():
+    cfg = config.get_config()
+    return {
+        'wpm': cfg['wpm'],
+        'freq': cfg['freq'],
+        'mode': _state.mode,
+        'dit': _state.dit,
+        'dah': _state.dah,
+        'key_down': _state.key_down,
+        'sending': _state.sending,
+    }
 
-selected_param = property(lambda self: _state.selected_param)
-key_down = property(lambda self: _state.key_down)
-dit = property(lambda self: _state.dit)
-dah = property(lambda self: _state.dah)
+
+def _update_config(updates):
+    config.update_config(updates)
+    cfg = config.get_config()
+    _gpio.setup(cfg)
 
 
-class _App:
-    """Thin facade so the GUI can call methods without knowing internals."""
-
-    @property
-    def selected_param(self):
-        return _state.selected_param
-
-    @property
-    def key_down(self):
-        return _state.key_down
-
-    @property
-    def dit(self):
-        return _state.dit
-
-    @property
-    def dah(self):
-        return _state.dah
-
-    @staticmethod
-    def get_config():
-        return config.get_config()
-
-    @staticmethod
-    def select_param(name):
-        if name in config.PARAMS:
-            _state.selected_param = name
-
-    @staticmethod
-    def adjust(direction):
-        val = config.adjust_param(_state.selected_param, direction)
-        cfg = config.get_config()
-        _audio.update(freq=cfg['freq'], volume=cfg['volume'])
-        return val
-
-    @staticmethod
-    def test_tone():
-        _enqueue_test()
-
-    @staticmethod
-    def send_text(text):
+def _web_send_text(text):
+    if not text:
+        _stop_send()
+    else:
         _enqueue_text(text)
 
 
 # ---------------------------------------------------------------------------
-#  Switch callbacks (called from GPIO interrupt context)
+#  GPIO switch callbacks
 # ---------------------------------------------------------------------------
-def _on_switch_adjust(direction):
-    """Physical Switch A flipped: adjust selected parameter."""
-    config.adjust_param(_state.selected_param, direction)
-    cfg = config.get_config()
-    _audio.update(freq=cfg['freq'], volume=cfg['volume'])
+def _on_tone_adjust(direction):
+    config.adjust_param('freq', direction)
 
 
-def _on_switch_cycle():
-    """Physical Switch B flipped: cycle to next parameter."""
-    params = config.PARAMS
-    idx = params.index(_state.selected_param) if _state.selected_param in params else 0
-    _state.selected_param = params[(idx + 1) % len(params)]
+def _on_wpm_adjust(direction):
+    config.adjust_param('wpm', direction)
 
 
 # ---------------------------------------------------------------------------
 #  Keyer loop (runs in its own thread)
 # ---------------------------------------------------------------------------
-_shutdown = threading.Event()
-
-
 def _keyer_loop():
-    """1 ms tick loop: reads paddles, runs keyer, drives outputs."""
     cfg = config.get_config()
-    keyer = Keyer(cfg['wpm'], cfg['weight'])
-    dt = 0.001               # 1 ms tick
+    keyer = Keyer(cfg['wpm'], WEIGHT)
+    dt = 0.001
     both_timer = 0.0
     sq_action = None
     sq_end = 0.0
@@ -159,7 +134,10 @@ def _keyer_loop():
     while not _shutdown.is_set():
         now = time.monotonic()
         cfg = config.get_config()
-        keyer.update(cfg['wpm'], cfg['weight'])
+        keyer.update(cfg['wpm'], WEIGHT)
+
+        # -- read mode switch --------------------------------------------
+        _state.mode = _gpio.read_mode()
 
         # -- read paddles ------------------------------------------------
         dit_pressed = _gpio.read_dit()
@@ -195,23 +173,29 @@ def _keyer_loop():
                     sq_action = act
                     sq_end = now + dur
 
-        # -- determine key state -----------------------------------------
-        if sq_action is not None:
-            key_down = (sq_action == 'on')
-        else:
-            key_down = keyer.tick(dt, dit_pressed, dah_pressed)
+        _state.sending = sq_action is not None or bool(_send_queue)
 
-        # -- update outputs on state change ------------------------------
+        # -- determine key state -----------------------------------------
+        if _state.mode == 'text':
+            # Text mode: only send queue drives keying
+            key_down = (sq_action == 'on') if sq_action is not None else False
+        else:
+            # Paddle mode: paddles + send queue (test tone)
+            if sq_action is not None:
+                key_down = (sq_action == 'on')
+            else:
+                key_down = keyer.tick(dt, dit_pressed, dah_pressed)
+
+        # -- update speaker on state change ------------------------------
         if key_down != _state.key_down:
             _state.key_down = key_down
             if key_down:
                 _gpio.speaker_on(cfg['freq'])
-                _audio.set_key(True)
-                _gpio.set_ptt(True)
             else:
                 _gpio.speaker_off()
-                _audio.set_key(False)
-                _gpio.set_ptt(False)
+
+        # -- TX output: ground pin only in text mode ---------------------
+        _gpio.set_tx(key_down and _state.mode == 'text')
 
         # -- sleep remainder of tick -------------------------------------
         elapsed = time.monotonic() - now
@@ -221,60 +205,48 @@ def _keyer_loop():
 
 
 # ---------------------------------------------------------------------------
-#  Module-level singletons (created early so callbacks can reference them)
-# ---------------------------------------------------------------------------
-_gpio = GpioHandler()
-_audio = AudioEngine()
-
-
-# ---------------------------------------------------------------------------
 #  Entry point
 # ---------------------------------------------------------------------------
 def main():
-    # Load config from disk
     config.load_config()
     cfg = config.get_config()
 
     # GPIO
-    _gpio.on_adjust = _on_switch_adjust
-    _gpio.on_cycle = _on_switch_cycle
+    _gpio.on_tone_adjust = _on_tone_adjust
+    _gpio.on_wpm_adjust = _on_wpm_adjust
     _gpio.setup(cfg)
 
-    # Audio engine (ALSA)
-    _audio.update(freq=cfg['freq'], volume=cfg['volume'])
-    _audio.start()
+    # Web server
+    web = WebServer(
+        get_status=_get_status,
+        get_config=config.get_config,
+        update_config=_update_config,
+        send_text=_web_send_text,
+        test_tone=_enqueue_test,
+        port=80,
+    )
+    web.start()
 
-    # Graceful shutdown on SIGINT / SIGTERM
+    # Keyer loop in background thread
+    keyer_thread = threading.Thread(target=_keyer_loop, daemon=True,
+                                    name='keyer-loop')
+    keyer_thread.start()
+
+    # Graceful shutdown
     def _on_sig(_sig, _frame):
         _shutdown.set()
     signal.signal(signal.SIGINT, _on_sig)
     signal.signal(signal.SIGTERM, _on_sig)
 
-    # Start keyer thread
-    kt = threading.Thread(target=_keyer_loop, daemon=True, name='keyer')
-    kt.start()
-    print('ham-cw: keyer running')
-
-    # GUI (try to open regardless — let tkinter find the display)
     try:
-        import tkinter as tk
-        from gui import KeyerGui
-
-        root = tk.Tk()
-        KeyerGui(root, _App())
-        print('ham-cw: GUI started')
-        root.mainloop()              # blocks until window is closed
+        while not _shutdown.is_set():
+            time.sleep(0.5)
+    except KeyboardInterrupt:
         _shutdown.set()
-    except Exception as e:
-        print(f'ham-cw: GUI unavailable ({e}), running headless')
-        _shutdown.wait()
 
-    # Cleanup
-    _audio.stop()
-    _gpio.speaker_off()
-    _gpio.set_ptt(False)
+    web.stop()
     _gpio.cleanup()
-    print('\nham-cw: stopped.')
+    print("ham-cw: stopped")
 
 
 if __name__ == '__main__':

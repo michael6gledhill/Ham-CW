@@ -1,19 +1,13 @@
 [Unit]
 Description=ham-cw iambic CW keyer
-After=graphical.target
-Wants=graphical.target
+After=network.target
 
 [Service]
 Type=simple
-User=pi
 WorkingDirectory=/home/pi/Ham-CW
-Environment=DISPLAY=:0
-Environment=WAYLAND_DISPLAY=wayland-1
-Environment=XDG_RUNTIME_DIR=/run/user/1000
-Environment=XAUTHORITY=/home/pi/.Xauthority
 ExecStart=/usr/bin/python3 /home/pi/Ham-CW/main.py
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target

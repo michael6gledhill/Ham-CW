@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Ham-CW</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Courier New',monospace;background:#1a1a2e;color:#e0e0e0;min-height:100vh}
+nav{display:flex;background:#16213e;border-bottom:2px solid #0f3460}
+nav button{flex:1;padding:14px;background:none;border:none;color:#666;
+  font-size:16px;font-family:inherit;cursor:pointer;transition:color .2s}
+nav button.active{color:#00ff41;border-bottom:3px solid #00ff41}
+.page{display:none;padding:20px;max-width:600px;margin:0 auto}
+.page.active{display:block}
+
+/* Transmit page */
+.status-row{display:flex;justify-content:space-between;align-items:center;
+  padding:14px 0;border-bottom:1px solid #333}
+.status-label{color:#888;font-size:14px}
+.status-value{color:#00ff41;font-size:20px;font-weight:bold}
+.badge{display:inline-block;padding:4px 14px;border-radius:4px;
+  font-weight:bold;font-size:14px;letter-spacing:1px}
+.badge-paddle{background:#0f3460;color:#4fc3f7}
+.badge-text{background:#1b5e20;color:#69f0ae}
+.indicators{display:flex;gap:18px;align-items:center;margin-top:14px;
+  padding:14px 0;border-bottom:1px solid #333}
+.ind{display:flex;align-items:center;gap:6px;font-size:14px;color:#888}
+.dot{width:22px;height:22px;border-radius:50%;background:#333;
+  transition:background .05s,box-shadow .05s}
+.dot.on{background:#00ff41;box-shadow:0 0 10px #00ff41}
+.dot.tx{background:#f44336;box-shadow:0 0 10px #f44336}
+.section{margin-top:20px}
+.section-hidden{display:none}
+textarea{width:100%;height:90px;background:#0d1117;color:#e0e0e0;
+  border:1px solid #333;padding:10px;font-family:inherit;font-size:16px;
+  resize:vertical;border-radius:4px}
+textarea:focus{outline:none;border-color:#0f3460}
+.btn{padding:10px 24px;border:none;font-size:15px;cursor:pointer;
+  font-family:inherit;border-radius:4px;transition:opacity .2s}
+.btn:active{opacity:.7}
+.btn-send{background:#1b5e20;color:#fff;margin-top:8px}
+.btn-test{background:#0f3460;color:#fff;margin-top:8px;margin-left:8px}
+.btn-stop{background:#b71c1c;color:#fff;margin-top:8px;margin-left:8px}
+.paddle-msg{margin-top:24px;text-align:center;color:#666;font-size:14px}
+
+/* Settings page */
+.group{margin-bottom:24px}
+.group h3{color:#4fc3f7;margin-bottom:10px;padding-bottom:6px;
+  border-bottom:1px solid #333;font-size:14px;letter-spacing:1px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:8px 0}
+.row label{color:#ccc;font-size:14px}
+.row input{width:80px;padding:6px;background:#0d1117;color:#e0e0e0;
+  border:1px solid #333;text-align:center;font-family:inherit;border-radius:4px}
+.row input:focus{outline:none;border-color:#0f3460}
+.btn-save{display:block;width:100%;padding:14px;background:#0f3460;
+  color:#fff;border:none;font-size:16px;cursor:pointer;font-family:inherit;
+  border-radius:4px;margin-top:20px;transition:background .2s}
+.btn-save:hover{background:#1a4a80}
+.toast{text-align:center;color:#00ff41;margin-top:10px;opacity:0;
+  transition:opacity .3s;font-size:14px}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+
+<nav>
+  <button id="nav-tx" class="active" onclick="showPage('transmit')">Transmit</button>
+  <button id="nav-set" onclick="showPage('settings')">Settings</button>
+</nav>
+
+<!-- ============== TRANSMIT PAGE ============== -->
+<div id="page-transmit" class="page active">
+
+  <div class="status-row">
+    <span class="status-label">MODE</span>
+    <span id="mode-badge" class="badge badge-paddle">PADDLE</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">TONE</span>
+    <span id="tx-freq" class="status-value">700 Hz</span>
+  </div>
+  <div class="status-row">
+    <span class="status-label">SPEED</span>
+    <span id="tx-wpm" class="status-value">20 WPM</span>
+  </div>
+
+  <div class="indicators">
+    <div class="ind"><span id="d-dit" class="dot"></span> DIT</div>
+    <div class="ind"><span id="d-dah" class="dot"></span> DAH</div>
+    <div class="ind"><span id="d-tx" class="dot"></span> TX</div>
+  </div>
+
+  <!-- Text mode section -->
+  <div id="sec-text" class="section section-hidden">
+    <textarea id="cw-text" placeholder="Type text to send as CW..."></textarea>
+    <div>
+      <button class="btn btn-send" onclick="sendText()">Send CW</button>
+      <button class="btn btn-test" onclick="testTone()">Test Tone</button>
+      <button class="btn btn-stop" onclick="stopSend()">Stop</button>
+    </div>
+  </div>
+
+  <!-- Paddle mode section -->
+  <div id="sec-paddle" class="section">
+    <div class="paddle-msg">Iambic paddles active</div>
+    <div style="text-align:center;margin-top:12px">
+      <button class="btn btn-test" onclick="testTone()">Test Tone</button>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============== SETTINGS PAGE ============== -->
+<div id="page-settings" class="page">
+
+  <div class="group">
+    <h3>KEYER</h3>
+    <div class="row"><label>Tone (Hz)</label>
+      <input type="number" id="s-freq" min="200" max="2000" step="50"></div>
+    <div class="row"><label>Speed (WPM)</label>
+      <input type="number" id="s-wpm" min="5" max="50" step="1"></div>
+  </div>
+
+  <div class="group">
+    <h3>GPIO PINS</h3>
+    <div class="row"><label>Speaker +</label>
+      <input type="number" id="s-pin_spk" min="0" max="27"></div>
+    <div class="row"><label>Speaker GND</label>
+      <input type="number" id="s-pin_spk_gnd" min="0" max="27"></div>
+    <div class="row"><label>DIT Paddle</label>
+      <input type="number" id="s-pin_dit" min="0" max="27"></div>
+    <div class="row"><label>DAH Paddle</label>
+      <input type="number" id="s-pin_dah" min="0" max="27"></div>
+    <div class="row"><label>Mode Switch</label>
+      <input type="number" id="s-pin_mode" min="0" max="27"></div>
+    <div class="row"><label>TX Output</label>
+      <input type="number" id="s-pin_tx" min="0" max="27"></div>
+    <div class="row"><label>Tone Switch Up</label>
+      <input type="number" id="s-pin_tone_up" min="0" max="27"></div>
+    <div class="row"><label>Tone Switch Down</label>
+      <input type="number" id="s-pin_tone_down" min="0" max="27"></div>
+    <div class="row"><label>WPM Switch Up</label>
+      <input type="number" id="s-pin_wpm_up" min="0" max="27"></div>
+    <div class="row"><label>WPM Switch Down</label>
+      <input type="number" id="s-pin_wpm_down" min="0" max="27"></div>
+  </div>
+
+  <button class="btn-save" onclick="saveSettings()">Save Settings</button>
+  <div id="toast" class="toast">Settings saved &mdash; GPIO reconfigured</div>
+</div>
+
+<script>
+/* ---- page navigation ---- */
+function showPage(name){
+  document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});
+  document.getElementById('page-'+name).classList.add('active');
+  document.getElementById('nav-tx').classList.toggle('active', name==='transmit');
+  document.getElementById('nav-set').classList.toggle('active', name==='settings');
+  if(name==='settings') loadSettings();
+}
+
+/* ---- status polling ---- */
+function poll(){
+  fetch('/api/status').then(function(r){return r.json()}).then(function(s){
+    document.getElementById('tx-freq').textContent = s.freq+' Hz';
+    document.getElementById('tx-wpm').textContent = s.wpm+' WPM';
+
+    var badge = document.getElementById('mode-badge');
+    if(s.mode==='paddle'){
+      badge.textContent='PADDLE'; badge.className='badge badge-paddle';
+      document.getElementById('sec-text').classList.add('section-hidden');
+      document.getElementById('sec-paddle').classList.remove('section-hidden');
+    } else {
+      badge.textContent='TEXT'; badge.className='badge badge-text';
+      document.getElementById('sec-text').classList.remove('section-hidden');
+      document.getElementById('sec-paddle').classList.add('section-hidden');
+    }
+
+    document.getElementById('d-dit').className = 'dot'+(s.dit?' on':'');
+    document.getElementById('d-dah').className = 'dot'+(s.dah?' on':'');
+    document.getElementById('d-tx').className  = 'dot'+(s.key_down?' tx':'');
+  }).catch(function(){});
+}
+setInterval(poll, 200);
+poll();
+
+/* ---- settings ---- */
+function loadSettings(){
+  fetch('/api/config').then(function(r){return r.json()}).then(function(c){
+    for(var k in c){
+      var el = document.getElementById('s-'+k);
+      if(el) el.value = c[k];
+    }
+  });
+}
+
+function saveSettings(){
+  var cfg = {};
+  document.querySelectorAll('#page-settings input').forEach(function(el){
+    var key = el.id.replace('s-','');
+    cfg[key] = parseInt(el.value, 10);
+  });
+  fetch('/api/config',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify(cfg)
+  }).then(function(){
+    var t = document.getElementById('toast');
+    t.classList.add('show');
+    setTimeout(function(){t.classList.remove('show')},2000);
+  });
+}
+
+/* ---- send CW ---- */
+function sendText(){
+  var text = document.getElementById('cw-text').value.trim();
+  if(!text) return;
+  fetch('/api/send',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:text})
+  });
+}
+
+function stopSend(){
+  fetch('/api/send',{
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:''})
+  });
+}
+
+function testTone(){
+  fetch('/api/test',{method:'POST'});
+}
+</script>
+</body>
+</html>

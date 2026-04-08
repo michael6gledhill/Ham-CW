@@ -1,61 +1,58 @@
 # Ham-CW
 
-## Connecting the Pi 4 Audio Jack to a Baofeng UV-5R
+Iambic Mode-B CW keyer for Raspberry Pi Zero W.  Web UI, GPIO speaker,
+three SPDT switches, and a TX output pin for keying a radio in text mode.
 
-The Raspberry Pi 4 has a 3.5 mm TRRS jack. The keyer outputs a clean sine wave on the **left audio channel (Tip)** which feeds the Baofeng's microphone input.
+## Hardware
 
-### Pi 4 TRRS Pinout
+### GPIO Pins (defaults — all configurable via Settings page)
 
-```
-        Tip    = Left audio  (tone output)
-        Ring 1 = Right audio (unused)
-        Ring 2 = Ground
-        Sleeve = Composite video (unused)
-```
+| Function        | GPIO | Direction |
+|-----------------|------|-----------|
+| Speaker +       | 20   | Output    |
+| Speaker GND     | 21   | Output    |
+| DIT Paddle      | 27   | Input     |
+| DAH Paddle      | 22   | Input     |
+| Mode Switch     | 26   | Input     |
+| TX Output       | 16   | Output    |
+| Tone Switch Up  | 5    | Input     |
+| Tone Switch Down| 6    | Input     |
+| WPM Switch Up   | 13   | Input     |
+| WPM Switch Down | 19   | Input     |
 
-### Baofeng UV-5R Mic/Speaker Connector
+All inputs use internal pull-ups and are active-low (connect to GND to activate).
 
-The Baofeng uses a Kenwood-style dual-pin connector:
+### SPDT Switches
 
-- **2.5 mm plug** = Mic + PTT
-- **3.5 mm plug** = Speaker/Ear (not used here)
+Each single-pole double-throw switch has its common terminal wired to **GND**.
 
-On the **2.5 mm mic plug**:
+- **Mode switch** — one position grounds `pin_mode` (paddle mode); the other
+  leaves it floating (text mode).  In paddle mode the iambic paddles key
+  directly.  In text mode the Pi grounds `pin_tx` while transmitting CW
+  entered from the web UI.
+- **Tone switch** — flip up → frequency increases by 50 Hz; flip down →
+  decreases.
+- **WPM switch** — flip up → speed increases by 1 WPM; flip down → decreases.
 
-```
-        Tip    = Microphone input
-        Ring   = PTT (short to ground = transmit)
-        Sleeve = Ground
-```
+### Speaker
 
-### Wiring
+Connect a small speaker between `pin_spk` (PWM output) and `pin_spk_gnd`.
 
-Connect only two wires from the Pi TRRS to the Baofeng 2.5 mm plug:
+### TX Output
 
-```
-Pi TRRS Tip (Left audio) ---[10k]---+---> Baofeng 2.5mm Tip (Mic)
-                                    |
-                                  [1k]
-                                    |
-Pi TRRS Ring 2 (Ground) ------------+---> Baofeng 2.5mm Sleeve (GND)
-```
+`pin_tx` is held HIGH normally and pulled LOW (grounded) when transmitting
+in **text mode**.  Wire this to your radio's PTT/key input through
+appropriate level shifting if needed.
 
-The 10k/1k voltage divider reduces the Pi's line-level output (~1 V peak) to mic level (~90 mV peak). Without it the radio will be overdriven and distorted.
+## Web UI
 
-### PTT
+The keyer serves a web interface on **port 80**.  Open
+`http://<pi-ip>/` in any browser on the same network.
 
-PTT is handled by a **manual SPDT switch** wired between the Baofeng 2.5 mm Ring (PTT) and Ground. Flip the switch to transmit, flip back to receive.
-
-### Audio Output Setup
-
-Make sure the Pi is sending audio out the 3.5 mm jack (not HDMI):
-
-```bash
-sudo raspi-config
-# Advanced Options -> Audio -> Force 3.5mm ('Headphones')
-```
-
-The **Volume** setting in the keyer controls the ALSA output level to the radio. The GPIO sidetone speaker always plays at a fixed volume.
+- **Transmit page** — shows tone, WPM, mode, paddle indicators, and
+  TX status.  In text mode a text box and Send button appear.
+- **Settings page** — edit all GPIO pin assignments, tone frequency,
+  and WPM speed.  Changes take effect immediately.
 
 ## Install
 
