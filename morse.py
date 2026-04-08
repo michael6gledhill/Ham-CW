@@ -1,26 +1,7 @@
-"""Iambic Mode-B CW keyer engine.
+"""Morse code tables, timing logic, and iambic keyer.
 
-Pure logic -- no I/O.  Call tick() once per millisecond with the
-current paddle states and it returns whether the key should be down.
-
-Morse Timing (PARIS standard)
-------------------------------
-The word "PARIS" contains exactly 50 dit-units.
-At *W* words per minute the fundamental dit duration is:
-
-    dit_duration = 60 / (50 * W) = 1.2 / W   seconds
-
-Element durations measured in dit-units:
-
-    dit                1 unit   =  1.2 / W  s
-    dah                3 units  =  3.6 / W  s   (adjustable via weight)
-    intra-char gap     1 unit   =  1.2 / W  s
-    inter-char gap     3 units  =  3.6 / W  s
-    inter-word gap     7 units  =  8.4 / W  s
-
-The *weight* parameter scales the dah length:
-    weight = 300 -> dah = 3.0 * dit  (standard)
-    weight = 350 -> dah = 3.5 * dit  (heavy)
+Pre-computes timing tables at startup for performance.
+Standard timing: dit = 1200 / WPM milliseconds.
 """
 
 # ---------------------------------------------------------------------------
@@ -42,52 +23,70 @@ MORSE = {
 }
 
 
+def dit_duration(wpm):
+    """Standard dit duration in seconds: 1200ms / WPM."""
+    return 1.2 / max(wpm, 1)
+
+
 # ---------------------------------------------------------------------------
-#  Keyer state machine
+#  Pre-computed timing table (rebuilt when WPM changes)
+# ---------------------------------------------------------------------------
+_timing_cache = {}
+
+
+def get_timing(wpm):
+    """Return (dit_s, dah_s, gap_s) for a given WPM, with caching."""
+    if wpm not in _timing_cache:
+        d = dit_duration(wpm)
+        _timing_cache[wpm] = (d, d * 3.0, d)
+    return _timing_cache[wpm]
+
+
+# ---------------------------------------------------------------------------
+#  Iambic Mode-B keyer state machine
 # ---------------------------------------------------------------------------
 class Keyer:
     """Iambic Mode-B keyer.
 
+    Pure logic -- no I/O.  Call tick() every ~1 ms with paddle states.
+    Returns True when the tone should be ON.
+
     States:
-        IDLE    - waiting for a paddle press
-        SENDING - tone on (dit or dah)
-        SPACING - inter-element silence
+        IDLE    -- waiting for a paddle press
+        SENDING -- tone on (dit or dah)
+        SPACING -- inter-element silence
 
     Mode-B behaviour: the opposite paddle is latched into *memory*
     only during the SENDING phase.  When both paddles are squeezed
     and then released, the keyer finishes the current element plus
-    one alternation -- the hallmark of Mode B.
+    one alternation.
     """
 
     IDLE, SENDING, SPACING = 0, 1, 2
 
-    def __init__(self, wpm=20, weight=300):
+    def __init__(self, wpm=20):
         self.state = self.IDLE
-        self.element = None          # 'dit' or 'dah'
-        self.mem = None              # opposite-paddle memory
+        self.element = None
+        self.mem = None
         self.elapsed = 0.0
         self.duration = 0.0
-        self._update_timing(wpm, weight)
+        self._update_timing(wpm)
 
-    # -- timing -----------------------------------------------------------
-
-    def _update_timing(self, wpm, weight):
-        dit_s = 1.2 / max(wpm, 1)   # seconds per dit
+    def _update_timing(self, wpm):
+        dit_s, dah_s, gap_s = get_timing(wpm)
         self.dit_len = dit_s
-        self.dah_len = dit_s * weight / 100.0
-        self.gap_len = dit_s         # intra-element gap = 1 dit
+        self.dah_len = dah_s
+        self.gap_len = gap_s
 
-    def update(self, wpm, weight):
-        """Re-calculate timing (call when WPM or weight changes)."""
-        self._update_timing(wpm, weight)
+    def update(self, wpm):
+        """Recalculate timing (call when WPM changes)."""
+        self._update_timing(wpm)
 
     def reset(self):
         """Force keyer back to IDLE."""
         self.state = self.IDLE
         self.element = None
         self.mem = None
-
-    # -- element selection ------------------------------------------------
 
     def _pick_live(self, dit, dah):
         if dit and dah:
@@ -103,13 +102,8 @@ class Keyer:
         self.mem = None
         return m if m else self._pick_live(dit, dah)
 
-    # -- main tick --------------------------------------------------------
-
     def tick(self, dt, dit, dah):
-        """Advance the keyer by *dt* seconds.
-
-        Returns True when the key (tone) should be ON.
-        """
+        """Advance keyer by *dt* seconds.  Returns True when tone is ON."""
         if self.state == self.IDLE:
             nxt = self._pick_live(dit, dah)
             if nxt is None:
@@ -121,7 +115,6 @@ class Keyer:
             return True
 
         if self.state == self.SENDING:
-            # Latch opposite paddle (Mode-B)
             if self.element == 'dit' and dah:
                 self.mem = 'dah'
             elif self.element == 'dah' and dit:
@@ -129,7 +122,6 @@ class Keyer:
             self.elapsed += dt
             if self.elapsed < self.duration:
                 return True
-            # -> spacing
             self.elapsed = 0.0
             self.duration = self.gap_len
             self.state = self.SPACING
@@ -155,15 +147,9 @@ class Keyer:
 # ---------------------------------------------------------------------------
 #  Text -> element list
 # ---------------------------------------------------------------------------
-def text_to_elements(text, wpm=20, weight=300):
-    """Convert *text* to a list of ``('on'|'off', seconds)`` tuples.
-
-    Suitable for feeding into the send-queue so the keyer can play
-    back arbitrary text as Morse code.
-    """
-    dit_s = 1.2 / max(wpm, 1)
-    dah_s = dit_s * weight / 100.0
-    gap_s = dit_s
+def text_to_elements(text, wpm=20):
+    """Convert *text* to a list of ('on'|'off', seconds) tuples."""
+    dit_s, dah_s, gap_s = get_timing(wpm)
 
     elements = []
     prev_char = False
@@ -171,7 +157,7 @@ def text_to_elements(text, wpm=20, weight=300):
     for ch in text.upper():
         if ch == ' ':
             if prev_char:
-                elements.append(('off', gap_s * 7))   # word gap
+                elements.append(('off', gap_s * 7))
             prev_char = False
             continue
 
@@ -180,11 +166,11 @@ def text_to_elements(text, wpm=20, weight=300):
             continue
 
         if prev_char:
-            elements.append(('off', gap_s * 3))        # inter-character gap
+            elements.append(('off', gap_s * 3))
 
         for j, sym in enumerate(code):
             if j > 0:
-                elements.append(('off', gap_s))        # intra-character gap
+                elements.append(('off', gap_s))
             elements.append(('on', dit_s if sym == '.' else dah_s))
 
         prev_char = True

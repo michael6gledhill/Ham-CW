@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# ham-cw install script for Raspberry Pi 4
+# ham-cw install script for Raspberry Pi
 # curl -fsSL https://raw.githubusercontent.com/michael6gledhill/Ham-CW/main/install.sh | bash
 
 set -euo pipefail
@@ -15,22 +15,33 @@ echo "[ham-cw] installing dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
     python3-pigpio pigpio \
+    python3-gpiozero \
+    python3-flask \
+    python3-numpy \
     python3-alsaaudio \
-    python3-tk \
+    portaudio19-dev \
     git
 
-# 2. Enable pigpio daemon (DMA-timed PWM)
+# 2. Install pyaudio via pip (not always in apt)
+if ! python3 -c 'import pyaudio' 2>/dev/null; then
+    echo "[ham-cw] installing pyaudio via pip..."
+    pip3 install --break-system-packages pyaudio 2>/dev/null || \
+    pip3 install pyaudio 2>/dev/null || \
+    echo "[ham-cw] pyaudio not available, will use ALSA fallback"
+fi
+
+# 3. Enable pigpio daemon (DMA-timed PWM)
 echo "[ham-cw] enabling pigpio daemon..."
 sudo systemctl enable pigpiod
 sudo systemctl start pigpiod
 
-# 3. GPIO group
+# 4. GPIO group
 if ! groups "$USER" | grep -q gpio; then
     echo "[ham-cw] adding $USER to gpio group..."
     sudo usermod -a -G gpio "$USER"
 fi
 
-# 4. Clone or pull repo
+# 5. Clone or pull repo
 if [ -d "$INSTALL_DIR/.git" ]; then
     echo "[ham-cw] pulling latest code..."
     git -C "$INSTALL_DIR" pull --ff-only
@@ -39,7 +50,7 @@ else
     git clone "$REPO_URL" "$INSTALL_DIR"
 fi
 
-# 5. Systemd service
+# 6. Systemd service
 echo "[ham-cw] installing systemd service..."
 sudo cp "$INSTALL_DIR/ham-cw.service" /etc/systemd/system/ham-cw.service
 sudo systemctl daemon-reload
@@ -48,5 +59,5 @@ sudo systemctl restart "$SERVICE"
 
 echo ""
 echo "=== ham-cw installed ==="
-echo "The keyer GUI should appear on the touchscreen."
+echo "Web UI: http://$(hostname -I | awk '{print $1}')"
 echo "Update: curl -fsSL https://raw.githubusercontent.com/michael6gledhill/Ham-CW/main/update.sh | bash"

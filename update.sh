@@ -19,12 +19,20 @@ else
 fi
 
 # 2. Install dependencies (only if missing)
-for pkg in python3-pigpio pigpio python3-alsaaudio python3-tk; do
+for pkg in python3-pigpio pigpio python3-gpiozero python3-flask python3-numpy python3-alsaaudio; do
     dpkg -s "$pkg" &>/dev/null || {
         echo "[ham-cw] installing $pkg..."
         sudo apt-get install -y --no-install-recommends "$pkg"
     }
 done
+
+# Install pyaudio via pip if missing
+if ! python3 -c 'import pyaudio' 2>/dev/null; then
+    dpkg -s portaudio19-dev &>/dev/null || sudo apt-get install -y --no-install-recommends portaudio19-dev
+    pip3 install --break-system-packages pyaudio 2>/dev/null || \
+    pip3 install pyaudio 2>/dev/null || \
+    echo "[ham-cw] pyaudio not available, will use ALSA fallback"
+fi
 
 # Ensure pigpio daemon is running
 sudo systemctl enable pigpiod 2>/dev/null

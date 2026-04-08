@@ -1,13 +1,12 @@
 [Unit]
 Description=ham-cw CW keyer
-After=network.target
+After=network.target pigpiod.service
+Wants=pigpiod.service
 
 [Service]
 Type=simple
-Environment=DISPLAY=:0
-Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/pi/Ham-CW
-ExecStart=/usr/bin/python3 /home/pi/Ham-CW/main.py
+ExecStart=/usr/bin/python3 /home/pi/Ham-CW/app.py
 Restart=on-failure
 RestartSec=5
 
