@@ -18,6 +18,7 @@ import config
 from keyer_engine import Keyer, text_to_elements
 from gpio_handler import GpioHandler
 from audio_engine import AudioEngine
+from web_server import WebServer
 
 WEIGHT = 300
 
@@ -116,6 +117,15 @@ def _gui_get_state():
         'key_down': _state.key_down,
         'sending': _state.sending,
     }
+
+
+# ---------------------------------------------------------------------------
+#  Web callbacks
+# ---------------------------------------------------------------------------
+def _web_update_config(updates):
+    config.update_config(updates)
+    cfg = config.get_config()
+    _gpio.setup(cfg)
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +250,20 @@ def main():
     _audio.set_volume(cfg['volume'])
     _audio.start()
 
+    # Web server (background thread)
+    web = WebServer(
+        get_status=_gui_get_state,
+        get_config=config.get_config,
+        update_config=_web_update_config,
+        adjust_param=config.adjust_param,
+        send_text=_enqueue_text,
+        stop_send=_stop_send,
+        test_tone=_enqueue_test,
+        scan_pins=_gpio.scan_pins,
+        port=80,
+    )
+    web.start()
+
     # Keyer loop (background thread)
     keyer_thread = threading.Thread(target=_keyer_loop, daemon=True,
                                     name='keyer-loop')
@@ -261,6 +285,7 @@ def main():
 
         def _on_close():
             _shutdown.set()
+            web.stop()
             _audio.stop()
             _gpio.cleanup()
             root.destroy()
@@ -290,6 +315,7 @@ def main():
         except KeyboardInterrupt:
             _shutdown.set()
 
+    web.stop()
     _audio.stop()
     _gpio.cleanup()
     print("ham-cw: stopped")
