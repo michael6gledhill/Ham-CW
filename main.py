@@ -262,7 +262,10 @@ def main():
         scan_pins=_gpio.scan_pins,
         port=80,
     )
-    web.start()
+    try:
+        web.start()
+    except Exception as e:
+        print(f"ham-cw: web server failed to start: {e}")
 
     # Keyer loop (background thread)
     keyer_thread = threading.Thread(target=_keyer_loop, daemon=True,
@@ -304,9 +307,9 @@ def main():
 
         root.mainloop()
 
-    except ImportError:
-        # Headless fallback (no tkinter)
-        print("ham-cw: tkinter not available -- headless mode")
+    except (ImportError, Exception) as e:
+        # Headless fallback (no display or no tkinter)
+        print(f"ham-cw: no GUI -- headless mode ({e})")
         signal.signal(signal.SIGINT, lambda s, f: _shutdown.set())
         signal.signal(signal.SIGTERM, lambda s, f: _shutdown.set())
         try:

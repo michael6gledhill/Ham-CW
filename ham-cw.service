@@ -1,10 +1,9 @@
 [Unit]
 Description=ham-cw CW keyer
-After=graphical.target
+After=network.target
 
 [Service]
 Type=simple
-User=pi
 Environment=DISPLAY=:0
 Environment=XDG_RUNTIME_DIR=/run/user/1000
 WorkingDirectory=/home/pi/Ham-CW
@@ -13,4 +12,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical.target
+WantedBy=multi-user.target
