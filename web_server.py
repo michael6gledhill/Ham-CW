@@ -30,12 +30,14 @@ class WebServer:
     """Thin wrapper around a threaded HTTP server."""
 
     def __init__(self, *, get_status, get_config, update_config,
-                 send_text, test_tone, port=80):
+                 send_text, stop_send, test_tone, scan_pins, port=80):
         self._get_status = get_status
         self._get_config = get_config
         self._update_config = update_config
         self._send_text = send_text
+        self._stop_send = stop_send
         self._test_tone = test_tone
+        self._scan_pins = scan_pins
         self._port = port
         self._server = None
         self._thread = None
@@ -52,21 +54,19 @@ class WebServer:
         if self._server:
             self._server.shutdown()
 
-    # -- handler factory --------------------------------------------------
-
     def _make_handler(self):
         get_status = self._get_status
         get_config = self._get_config
         update_config = self._update_config
         send_text = self._send_text
+        stop_send = self._stop_send
         test_tone = self._test_tone
+        scan_pins = self._scan_pins
 
         class Handler(BaseHTTPRequestHandler):
 
             def log_message(self, fmt, *args):
-                pass  # silence per-request logging
-
-            # -- helpers --------------------------------------------------
+                pass
 
             def _json_response(self, data, code=200):
                 body = json.dumps(data).encode()
@@ -90,8 +90,6 @@ class WebServer:
                 self.end_headers()
                 self.wfile.write(body)
 
-            # -- GET ------------------------------------------------------
-
             def do_GET(self):
                 path = urlparse(self.path).path
 
@@ -109,6 +107,10 @@ class WebServer:
                     self._json_response(get_config())
                     return
 
+                if path == '/api/scan':
+                    self._json_response({'active': scan_pins()})
+                    return
+
                 # Static files (path-traversal safe)
                 rel = path.lstrip('/')
                 full = os.path.realpath(os.path.join(_STATIC_DIR, rel))
@@ -119,8 +121,6 @@ class WebServer:
                     return
 
                 self.send_error(404)
-
-            # -- POST -----------------------------------------------------
 
             def do_POST(self):
                 path = urlparse(self.path).path
@@ -142,6 +142,8 @@ class WebServer:
                         text = str(data.get('text', ''))
                         if text:
                             send_text(text)
+                        else:
+                            stop_send()
                         self._json_response({'ok': True})
                     except (json.JSONDecodeError, ValueError) as exc:
                         self._json_response({'error': str(exc)}, 400)

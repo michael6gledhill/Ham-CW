@@ -3,8 +3,8 @@
 Manages paddle/switch inputs with polled software debounce,
 PWM sidetone speaker, and TX output pin.
 
-Note: RPi.GPIO add_event_detect is broken on Pi OS kernels >= 6.x
-(gpiochip interface).  All inputs are polled from the keyer loop.
+Note: RPi.GPIO add_event_detect is broken on Pi OS kernels >= 6.x.
+All inputs are polled from the keyer loop.
 """
 
 import time
@@ -53,7 +53,7 @@ class GpioHandler:
         IO.setwarnings(False)
 
         # Inputs (active-low with internal pull-ups)
-        for key in ('pin_dit', 'pin_dah', 'pin_mode',
+        for key in ('pin_dit', 'pin_dah', 'pin_mode_text', 'pin_mode_tx',
                      'pin_tone_up', 'pin_tone_down',
                      'pin_wpm_up', 'pin_wpm_down'):
             IO.setup(self._pins[key], IO.IN, pull_up_down=IO.PUD_UP)
@@ -61,7 +61,7 @@ class GpioHandler:
         # Outputs
         IO.setup(self._pins['pin_spk'], IO.OUT, initial=IO.LOW)
         IO.setup(self._pins['pin_spk_gnd'], IO.OUT, initial=IO.LOW)
-        IO.setup(self._pins['pin_tx'], IO.OUT, initial=IO.HIGH)
+        IO.setup(self._pins['pin_text_ground'], IO.OUT, initial=IO.HIGH)
 
         # Initialise debounce state
         self._tone_up_last = self._read('pin_tone_up')
@@ -70,7 +70,6 @@ class GpioHandler:
         self._wpm_down_last = self._read('pin_wpm_down')
 
     def cleanup(self):
-        """Release GPIO resources."""
         self.speaker_off()
         if HAS_GPIO:
             try:
@@ -96,17 +95,46 @@ class GpioHandler:
         return self._read('pin_dah')
 
     def read_mode(self):
-        """Returns 'paddle' when mode pin is grounded, else 'text'."""
-        return 'paddle' if self._read('pin_mode') else 'text'
+        """Returns 'text', 'tx', or 'idle'."""
+        if self._read('pin_mode_text'):
+            return 'text'
+        if self._read('pin_mode_tx'):
+            return 'tx'
+        return 'idle'
+
+    # -- GPIO pin scanning (for detect feature) ---------------------------
+
+    def scan_pins(self):
+        """Scan GPIO 2-27 for active (low) pins.
+        Skips pins currently configured as outputs.
+        Returns list of active pin numbers."""
+        if not HAS_GPIO:
+            return []
+
+        from config import OUTPUT_PINS
+        output_nums = set()
+        for key in OUTPUT_PINS:
+            if key in self._pins:
+                output_nums.add(self._pins[key])
+
+        active = []
+        for pin in range(2, 28):
+            if pin in output_nums:
+                continue
+            try:
+                IO.setup(pin, IO.IN, pull_up_down=IO.PUD_UP)
+                if IO.input(pin) == 0:
+                    active.append(pin)
+            except Exception:
+                continue
+        return active
 
     # -- switch polling ---------------------------------------------------
 
     def poll_switches(self):
-        """Call every tick from keyer loop.  Fires callbacks on switch
-        transitions (falling-edge debounce)."""
+        """Call every tick from keyer loop."""
         now = time.monotonic()
 
-        # Tone up
         cur = self._read('pin_tone_up')
         if cur and not self._tone_up_last and (now - self._tone_up_time) > _SW_DEBOUNCE:
             self._tone_up_time = now
@@ -114,7 +142,6 @@ class GpioHandler:
                 self.on_tone_adjust(1)
         self._tone_up_last = cur
 
-        # Tone down
         cur = self._read('pin_tone_down')
         if cur and not self._tone_down_last and (now - self._tone_down_time) > _SW_DEBOUNCE:
             self._tone_down_time = now
@@ -122,7 +149,6 @@ class GpioHandler:
                 self.on_tone_adjust(-1)
         self._tone_down_last = cur
 
-        # WPM up
         cur = self._read('pin_wpm_up')
         if cur and not self._wpm_up_last and (now - self._wpm_up_time) > _SW_DEBOUNCE:
             self._wpm_up_time = now
@@ -130,7 +156,6 @@ class GpioHandler:
                 self.on_wpm_adjust(1)
         self._wpm_up_last = cur
 
-        # WPM down
         cur = self._read('pin_wpm_down')
         if cur and not self._wpm_down_last and (now - self._wpm_down_time) > _SW_DEBOUNCE:
             self._wpm_down_time = now
@@ -172,11 +197,12 @@ class GpioHandler:
 
     # -- TX output --------------------------------------------------------
 
-    def set_tx(self, active):
-        """Ground pin_tx when *active* (transmitting)."""
+    def set_text_ground(self, active):
+        """Ground pin_text_ground when *active* (keying in text mode)."""
         if not HAS_GPIO:
             return
         try:
-            IO.output(self._pins['pin_tx'], IO.LOW if active else IO.HIGH)
+            IO.output(self._pins['pin_text_ground'],
+                      IO.LOW if active else IO.HIGH)
         except Exception:
             pass

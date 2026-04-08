@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """ham-cw: Iambic CW keyer for Raspberry Pi Zero.
 
-Wires together:
-    config       - persistent settings & pin mapping
-    keyer_engine - iambic Mode-B state machine
-    gpio_handler - paddle/switch inputs, PWM speaker, TX output
-    web_server   - HTTP web interface
+Modes (selected by two SPDT switches):
+    idle  - neither mode switch active; no keying
+    tx    - paddle mode; paddles drive keyer + speaker
+    text  - text mode; web UI text drives speaker + grounds pin_text_ground
 """
 
 import signal
@@ -19,13 +18,13 @@ from gpio_handler import GpioHandler
 from web_server import WebServer
 
 # ---------------------------------------------------------------------------
-#  Shared state (read by web API, written by keyer loop)
+#  Shared state
 # ---------------------------------------------------------------------------
 class _State:
     key_down = False
     dit = False
     dah = False
-    mode = 'paddle'
+    mode = 'idle'       # 'idle', 'tx', 'text'
     sending = False
 
 _state = _State()
@@ -41,14 +40,18 @@ _shutdown = threading.Event()
 # ---------------------------------------------------------------------------
 _send_queue = []
 _sq_lock = threading.Lock()
-
-WEIGHT = 300    # standard 3:1 dah/dit ratio
+WEIGHT = 300
 
 
 def _enqueue(elements):
     with _sq_lock:
         _send_queue.clear()
         _send_queue.extend(elements)
+
+
+def _stop_send():
+    with _sq_lock:
+        _send_queue.clear()
 
 
 def _enqueue_test():
@@ -60,11 +63,6 @@ def _enqueue_text(text):
     els = text_to_elements(text, cfg['wpm'], WEIGHT)
     if els:
         _enqueue(els)
-
-
-def _stop_send():
-    with _sq_lock:
-        _send_queue.clear()
 
 
 def _enqueue_ip():
@@ -102,13 +100,6 @@ def _update_config(updates):
     _gpio.setup(cfg)
 
 
-def _web_send_text(text):
-    if not text:
-        _stop_send()
-    else:
-        _enqueue_text(text)
-
-
 # ---------------------------------------------------------------------------
 #  GPIO switch callbacks
 # ---------------------------------------------------------------------------
@@ -121,7 +112,7 @@ def _on_wpm_adjust(direction):
 
 
 # ---------------------------------------------------------------------------
-#  Keyer loop (runs in its own thread)
+#  Keyer loop
 # ---------------------------------------------------------------------------
 def _keyer_loop():
     cfg = config.get_config()
@@ -136,7 +127,7 @@ def _keyer_loop():
         cfg = config.get_config()
         keyer.update(cfg['wpm'], WEIGHT)
 
-        # -- read mode switch --------------------------------------------
+        # -- read mode switches ------------------------------------------
         _state.mode = _gpio.read_mode()
 
         # -- read paddles ------------------------------------------------
@@ -159,8 +150,7 @@ def _keyer_loop():
 
         # -- paddle press cancels text playback --------------------------
         if (dit_pressed or dah_pressed) and _send_queue:
-            with _sq_lock:
-                _send_queue.clear()
+            _stop_send()
             sq_action = None
 
         # -- process send queue ------------------------------------------
@@ -175,16 +165,24 @@ def _keyer_loop():
 
         _state.sending = sq_action is not None or bool(_send_queue)
 
-        # -- determine key state -----------------------------------------
-        if _state.mode == 'text':
-            # Text mode: only send queue drives keying
-            key_down = (sq_action == 'on') if sq_action is not None else False
-        else:
-            # Paddle mode: paddles + send queue (test tone)
+        # -- determine key state based on mode ---------------------------
+        key_down = False
+
+        if _state.mode == 'tx':
+            # Paddle mode: paddles drive keyer + speaker
             if sq_action is not None:
                 key_down = (sq_action == 'on')
             else:
                 key_down = keyer.tick(dt, dit_pressed, dah_pressed)
+
+        elif _state.mode == 'text':
+            # Text mode: only send queue drives keying
+            key_down = (sq_action == 'on') if sq_action is not None else False
+
+        else:
+            # Idle: no keying (send queue still processes for test tone)
+            if sq_action is not None:
+                key_down = (sq_action == 'on')
 
         # -- update speaker on state change ------------------------------
         if key_down != _state.key_down:
@@ -194,8 +192,8 @@ def _keyer_loop():
             else:
                 _gpio.speaker_off()
 
-        # -- TX output: ground pin only in text mode ---------------------
-        _gpio.set_tx(key_down and _state.mode == 'text')
+        # -- TX output: ground pin only in text mode when keying ---------
+        _gpio.set_text_ground(key_down and _state.mode == 'text')
 
         # -- sleep remainder of tick -------------------------------------
         elapsed = time.monotonic() - now
@@ -211,28 +209,26 @@ def main():
     config.load_config()
     cfg = config.get_config()
 
-    # GPIO
     _gpio.on_tone_adjust = _on_tone_adjust
     _gpio.on_wpm_adjust = _on_wpm_adjust
     _gpio.setup(cfg)
 
-    # Web server
     web = WebServer(
         get_status=_get_status,
         get_config=config.get_config,
         update_config=_update_config,
-        send_text=_web_send_text,
+        send_text=_enqueue_text,
+        stop_send=_stop_send,
         test_tone=_enqueue_test,
+        scan_pins=_gpio.scan_pins,
         port=80,
     )
     web.start()
 
-    # Keyer loop in background thread
     keyer_thread = threading.Thread(target=_keyer_loop, daemon=True,
                                     name='keyer-loop')
     keyer_thread.start()
 
-    # Graceful shutdown
     def _on_sig(_sig, _frame):
         _shutdown.set()
     signal.signal(signal.SIGINT, _on_sig)

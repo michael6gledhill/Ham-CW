@@ -18,13 +18,17 @@ DEFAULTS = {
     'pin_spk_gnd': 21,
     'pin_dit': 27,
     'pin_dah': 22,
-    'pin_mode': 26,
-    'pin_tx': 16,
+    'pin_mode_text': 26,
+    'pin_mode_tx': 12,
+    'pin_text_ground': 16,
     'pin_tone_up': 5,
     'pin_tone_down': 6,
     'pin_wpm_up': 13,
     'pin_wpm_down': 19,
 }
+
+# Which pin keys are outputs (the rest are inputs)
+OUTPUT_PINS = {'pin_spk', 'pin_spk_gnd', 'pin_text_ground'}
 
 LIMITS = {
     'wpm': (5, 50),
@@ -41,7 +45,6 @@ _config = dict(DEFAULTS)
 
 
 def load_config():
-    """Load configuration from disk, merging with defaults."""
     global _config
     with _lock:
         try:
@@ -55,7 +58,6 @@ def load_config():
 
 
 def save_config():
-    """Save current configuration to disk."""
     with _lock:
         cfg = dict(_config)
     try:
@@ -66,13 +68,11 @@ def save_config():
 
 
 def get_config():
-    """Return a snapshot of the current configuration."""
     with _lock:
         return dict(_config)
 
 
 def update_config(updates):
-    """Update config with a dict of new values."""
     with _lock:
         for key, val in updates.items():
             if key not in DEFAULTS:
@@ -88,7 +88,6 @@ def update_config(updates):
 
 
 def adjust_param(param, direction):
-    """Adjust a parameter by one step.  Returns the new value."""
     with _lock:
         if param not in STEPS:
             return _config.get(param)
