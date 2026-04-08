@@ -14,7 +14,12 @@ echo "=== ham-cw installer ==="
 echo "[ham-cw] installing dependencies..."
 sudo apt-get update -qq
 sudo apt-get install -y --no-install-recommends \
-    python3-rpi.gpio git
+    python3-pigpio pigpio git
+
+# 2. Enable pigpio daemon (DMA-timed PWM)
+echo "[ham-cw] enabling pigpio daemon..."
+sudo systemctl enable pigpiod
+sudo systemctl start pigpiod
 
 # 2. GPIO group
 if ! groups "$USER" | grep -q gpio; then

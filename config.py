@@ -1,7 +1,7 @@
 """Configuration for ham-cw keyer.
 
-Stores all settings (WPM, tone frequency, GPIO pin assignments) in a
-JSON file next to the application.  Thread-safe reads and writes.
+Stores all settings in config.json next to the application.
+Thread-safe reads and writes.
 """
 
 import json
@@ -14,6 +14,8 @@ CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 DEFAULTS = {
     'wpm': 20,
     'freq': 700,
+    'freq_step': 50,
+    'wpm_step': 1,
     'pin_spk': 20,
     'pin_spk_gnd': 21,
     'pin_dit': 27,
@@ -27,18 +29,17 @@ DEFAULTS = {
     'pin_wpm_down': 19,
 }
 
-# Which pin keys are outputs (the rest are inputs)
 OUTPUT_PINS = {'pin_spk', 'pin_spk_gnd', 'pin_text_ground'}
 
 LIMITS = {
     'wpm': (5, 50),
     'freq': (200, 2000),
+    'freq_step': (1, 100),
+    'wpm_step': (1, 10),
 }
 
-STEPS = {
-    'wpm': 1,
-    'freq': 50,
-}
+FREQ_STEP_OPTIONS = [1, 5, 10, 15, 25, 50, 100]
+WPM_STEP_OPTIONS = [1, 2, 5]
 
 _lock = threading.Lock()
 _config = dict(DEFAULTS)
@@ -88,12 +89,19 @@ def update_config(updates):
 
 
 def adjust_param(param, direction):
+    """Adjust a parameter by its configured step size."""
     with _lock:
-        if param not in STEPS:
+        if param == 'freq':
+            step = _config.get('freq_step', 50)
+            lo, hi = LIMITS['freq']
+            _config['freq'] = max(lo, min(hi, _config['freq'] + step * direction))
+            val = _config['freq']
+        elif param == 'wpm':
+            step = _config.get('wpm_step', 1)
+            lo, hi = LIMITS['wpm']
+            _config['wpm'] = max(lo, min(hi, _config['wpm'] + step * direction))
+            val = _config['wpm']
+        else:
             return _config.get(param)
-        step = STEPS[param]
-        lo, hi = LIMITS[param]
-        _config[param] = max(lo, min(hi, _config[param] + step * direction))
-        val = _config[param]
     save_config()
     return val

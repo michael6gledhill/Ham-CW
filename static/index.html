@@ -3,81 +3,119 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Ham-CW</title>
+<title>Ham-CW Keyer</title>
 <style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e6edf3;
+  --muted:#8b949e;--green:#00ff41;--blue:#58a6ff;--red:#f85149;
+  --orange:#d29922;--purple:#bc8cff;--teal:#39d353}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Courier New',monospace;background:#1a1a2e;color:#e0e0e0;min-height:100vh}
-nav{display:flex;background:#16213e;border-bottom:2px solid #0f3460}
-nav button{flex:1;padding:14px;background:none;border:none;color:#666;
-  font-size:16px;font-family:inherit;cursor:pointer;transition:color .2s}
-nav button.active{color:#00ff41;border-bottom:3px solid #00ff41}
-.page{display:none;padding:20px;max-width:600px;margin:0 auto}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;
+  background:var(--bg);color:var(--text);min-height:100vh}
+
+/* Nav */
+nav{display:flex;background:var(--card);border-bottom:1px solid var(--border)}
+nav button{flex:1;padding:16px;background:none;border:none;color:var(--muted);
+  font-size:15px;font-weight:600;cursor:pointer;transition:.2s;
+  border-bottom:3px solid transparent;font-family:inherit}
+nav button.active{color:var(--green);border-bottom-color:var(--green)}
+nav button:hover:not(.active){color:var(--text)}
+
+.page{display:none;padding:16px;max-width:640px;margin:0 auto}
 .page.active{display:block}
 
-/* Transmit page */
-.status-row{display:flex;justify-content:space-between;align-items:center;
-  padding:14px 0;border-bottom:1px solid #333}
-.status-label{color:#888;font-size:14px}
-.status-value{color:#00ff41;font-size:20px;font-weight:bold}
-.badge{display:inline-block;padding:4px 14px;border-radius:4px;
-  font-weight:bold;font-size:14px;letter-spacing:1px}
-.badge-idle{background:#333;color:#888}
-.badge-tx{background:#0f3460;color:#4fc3f7}
-.badge-text{background:#1b5e20;color:#69f0ae}
-.indicators{display:flex;gap:18px;align-items:center;margin-top:14px;
-  padding:14px 0;border-bottom:1px solid #333}
-.ind{display:flex;align-items:center;gap:6px;font-size:14px;color:#888}
-.dot{width:22px;height:22px;border-radius:50%;background:#333;
-  transition:background .05s,box-shadow .05s}
-.dot.on{background:#00ff41;box-shadow:0 0 10px #00ff41}
-.dot.tx{background:#f44336;box-shadow:0 0 10px #f44336}
-.section{margin-top:20px}
-.section-hidden{display:none}
-textarea{width:100%;height:90px;background:#0d1117;color:#e0e0e0;
-  border:1px solid #333;padding:10px;font-family:inherit;font-size:16px;
-  resize:vertical;border-radius:4px}
-textarea:focus{outline:none;border-color:#0f3460}
-.btn{padding:10px 24px;border:none;font-size:15px;cursor:pointer;
-  font-family:inherit;border-radius:4px;transition:opacity .2s}
-.btn:active{opacity:.7}
-.btn-send{background:#1b5e20;color:#fff;margin-top:8px}
-.btn-test{background:#0f3460;color:#fff;margin-top:8px;margin-left:8px}
-.btn-stop{background:#b71c1c;color:#fff;margin-top:8px;margin-left:8px}
-.idle-msg,.paddle-msg{margin-top:24px;text-align:center;color:#666;font-size:14px}
+/* Cards */
+.card{background:var(--card);border:1px solid var(--border);
+  border-radius:8px;padding:16px;margin-bottom:12px}
+.card h3{font-size:12px;text-transform:uppercase;letter-spacing:1.5px;
+  color:var(--muted);margin-bottom:12px}
 
-/* Settings page */
-.group{margin-bottom:24px}
-.group h3{color:#4fc3f7;margin-bottom:10px;padding-bottom:6px;
-  border-bottom:1px solid #333;font-size:14px;letter-spacing:1px}
-.row{display:flex;justify-content:space-between;align-items:center;
-  padding:8px 0;gap:8px}
-.row label{color:#ccc;font-size:14px;flex:1}
-.row input[type=number]{width:70px;padding:6px;background:#0d1117;color:#e0e0e0;
-  border:1px solid #333;text-align:center;font-family:inherit;border-radius:4px}
-.row input:focus{outline:none;border-color:#0f3460}
-.btn-detect{padding:6px 12px;background:#4a148c;color:#fff;border:none;
-  font-size:12px;cursor:pointer;font-family:inherit;border-radius:4px;
-  white-space:nowrap}
-.btn-detect:active{opacity:.7}
-.btn-detect.detecting{background:#f57f17;animation:pulse 1s infinite}
+/* ---- Transmit page ---- */
+.mode-bar{display:flex;align-items:center;justify-content:center;
+  gap:10px;padding:20px 0;margin-bottom:8px}
+.mode-label{font-size:24px;font-weight:700;letter-spacing:2px}
+.mode-idle .mode-label{color:var(--muted)}
+.mode-tx .mode-label{color:var(--blue)}
+.mode-text .mode-label{color:var(--green)}
+
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}
+.stat{background:var(--card);border:1px solid var(--border);border-radius:8px;
+  padding:16px;text-align:center}
+.stat-val{font-size:32px;font-weight:700;color:var(--green);line-height:1.2}
+.stat-lbl{font-size:12px;color:var(--muted);text-transform:uppercase;
+  letter-spacing:1px;margin-top:4px}
+
+.indicators{display:flex;gap:16px;justify-content:center;padding:16px 0}
+.ind{display:flex;align-items:center;gap:8px;font-size:13px;
+  font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:1px}
+.dot{width:28px;height:28px;border-radius:50%;
+  background:var(--border);transition:.08s}
+.dot.on{background:var(--green);box-shadow:0 0 12px var(--green)}
+.dot.tx-on{background:var(--red);box-shadow:0 0 12px var(--red)}
+
+.section{margin-top:16px}
+.section-hidden{display:none}
+
+textarea{width:100%;height:100px;background:var(--bg);color:var(--text);
+  border:1px solid var(--border);padding:12px;font-size:16px;
+  font-family:'Courier New',monospace;resize:vertical;border-radius:6px}
+textarea:focus{outline:none;border-color:var(--blue)}
+textarea::placeholder{color:var(--muted)}
+
+.btn-row{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.btn{padding:12px 24px;border:none;font-size:14px;cursor:pointer;
+  font-weight:600;font-family:inherit;border-radius:6px;transition:.15s}
+.btn:active{transform:scale(.97)}
+.btn-send{background:#1f6f2b;color:#fff;flex:1}
+.btn-send:hover{background:#238636}
+.btn-test{background:#1f3d6f;color:#fff}
+.btn-test:hover{background:#264d8a}
+.btn-stop{background:#6f1f1f;color:#fff}
+.btn-stop:hover{background:#8b2525}
+
+.idle-msg{text-align:center;color:var(--muted);padding:24px;font-size:15px}
+.paddle-msg{text-align:center;color:var(--muted);padding:20px;font-size:15px}
+
+/* ---- Settings page ---- */
+.row{display:flex;align-items:center;padding:8px 0;gap:8px}
+.row label{flex:1;color:var(--text);font-size:14px}
+.row input[type=number]{width:70px;padding:8px;background:var(--bg);
+  color:var(--text);border:1px solid var(--border);text-align:center;
+  font-family:inherit;border-radius:6px;font-size:14px}
+.row input:focus{outline:none;border-color:var(--blue)}
+.row select{padding:8px;background:var(--bg);color:var(--text);
+  border:1px solid var(--border);border-radius:6px;font-family:inherit;
+  font-size:14px;cursor:pointer}
+.row select:focus{outline:none;border-color:var(--blue)}
+
+.btn-detect{padding:8px 14px;background:#4a148c;color:#fff;border:none;
+  font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;
+  border-radius:6px;white-space:nowrap;transition:.15s}
+.btn-detect:active{transform:scale(.95)}
+.btn-detect.detecting{background:var(--orange);animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
-.btn-save{display:block;width:100%;padding:14px;background:#0f3460;
-  color:#fff;border:none;font-size:16px;cursor:pointer;font-family:inherit;
-  border-radius:4px;margin-top:20px;transition:background .2s}
-.btn-save:hover{background:#1a4a80}
-.toast{text-align:center;color:#00ff41;margin-top:10px;opacity:0;
+
+.btn-save{display:block;width:100%;padding:16px;background:#1f6f2b;
+  color:#fff;border:none;font-size:16px;font-weight:600;cursor:pointer;
+  font-family:inherit;border-radius:6px;margin-top:16px;transition:.15s}
+.btn-save:hover{background:#238636}
+.btn-save:active{transform:scale(.98)}
+.toast{text-align:center;color:var(--green);margin-top:10px;opacity:0;
   transition:opacity .3s;font-size:14px}
 .toast.show{opacity:1}
 
 /* Detect overlay */
 .overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;
-  background:rgba(0,0,0,.85);z-index:100;justify-content:center;
-  align-items:center;flex-direction:column;gap:20px}
+  background:rgba(0,0,0,.9);z-index:100;justify-content:center;
+  align-items:center;flex-direction:column;gap:24px}
 .overlay.show{display:flex}
-.overlay-title{color:#fff;font-size:18px}
-.overlay-status{color:#f57f17;font-size:22px;font-weight:bold;min-height:30px}
-.overlay-cancel{padding:10px 30px;background:#b71c1c;color:#fff;border:none;
-  font-size:15px;cursor:pointer;border-radius:4px;font-family:inherit}
+.overlay-icon{font-size:48px;opacity:.6}
+.overlay-title{color:#fff;font-size:18px;font-weight:600;text-align:center;
+  padding:0 20px}
+.overlay-status{color:var(--orange);font-size:20px;font-weight:700;
+  min-height:28px}
+.overlay-cancel{padding:12px 32px;background:var(--red);color:#fff;border:none;
+  font-size:15px;font-weight:600;cursor:pointer;border-radius:6px;
+  font-family:inherit}
 </style>
 </head>
 <body>
@@ -90,48 +128,54 @@ textarea:focus{outline:none;border-color:#0f3460}
 <!-- ============== TRANSMIT PAGE ============== -->
 <div id="page-transmit" class="page active">
 
-  <div class="status-row">
-    <span class="status-label">MODE</span>
-    <span id="mode-badge" class="badge badge-idle">IDLE</span>
-  </div>
-  <div class="status-row">
-    <span class="status-label">TONE</span>
-    <span id="tx-freq" class="status-value">700 Hz</span>
-  </div>
-  <div class="status-row">
-    <span class="status-label">SPEED</span>
-    <span id="tx-wpm" class="status-value">20 WPM</span>
+  <div id="mode-bar" class="mode-bar mode-idle">
+    <span id="mode-label" class="mode-label">IDLE</span>
   </div>
 
-  <div class="indicators">
-    <div class="ind"><span id="d-dit" class="dot"></span> DIT</div>
-    <div class="ind"><span id="d-dah" class="dot"></span> DAH</div>
-    <div class="ind"><span id="d-tx" class="dot"></span> TX</div>
+  <div class="stats">
+    <div class="stat">
+      <div id="tx-freq" class="stat-val">700</div>
+      <div class="stat-lbl">Tone Hz</div>
+    </div>
+    <div class="stat">
+      <div id="tx-wpm" class="stat-val">20</div>
+      <div class="stat-lbl">WPM</div>
+    </div>
   </div>
 
-  <!-- Idle mode -->
+  <div class="card">
+    <div class="indicators">
+      <div class="ind"><span id="d-dit" class="dot"></span> DIT</div>
+      <div class="ind"><span id="d-dah" class="dot"></span> DAH</div>
+      <div class="ind"><span id="d-tx" class="dot"></span> KEY</div>
+    </div>
+  </div>
+
+  <!-- Idle -->
   <div id="sec-idle" class="section">
-    <div class="idle-msg">No mode selected</div>
-    <div style="text-align:center;margin-top:12px">
-      <button class="btn btn-test" onclick="testTone()">Test Tone</button>
+    <div class="idle-msg">Flip mode switch to enable TX or Text</div>
+    <div class="btn-row" style="justify-content:center;margin-top:8px">
+      <button class="btn btn-test" onclick="testTone()">Test Speaker</button>
     </div>
   </div>
 
-  <!-- Text mode section -->
-  <div id="sec-text" class="section section-hidden">
-    <textarea id="cw-text" placeholder="Type text to send as CW..."></textarea>
-    <div>
-      <button class="btn btn-send" onclick="sendText()">Send CW</button>
-      <button class="btn btn-test" onclick="testTone()">Test Tone</button>
-      <button class="btn btn-stop" onclick="stopSend()">Stop</button>
-    </div>
-  </div>
-
-  <!-- Paddle mode section -->
+  <!-- Paddle / TX mode -->
   <div id="sec-paddle" class="section section-hidden">
-    <div class="paddle-msg">Iambic paddles active</div>
-    <div style="text-align:center;margin-top:12px">
-      <button class="btn btn-test" onclick="testTone()">Test Tone</button>
+    <div class="paddle-msg">Iambic paddles active &mdash; press paddles to key</div>
+    <div class="btn-row" style="justify-content:center;margin-top:8px">
+      <button class="btn btn-test" onclick="testTone()">Test Speaker</button>
+    </div>
+  </div>
+
+  <!-- Text mode -->
+  <div id="sec-text" class="section section-hidden">
+    <div class="card" style="padding:12px">
+      <textarea id="cw-text" placeholder="Type CW message..."></textarea>
+      <div class="btn-row">
+        <button class="btn btn-send" onclick="sendText()">Send CW</button>
+        <button class="btn btn-stop" onclick="stopSend()">Stop</button>
+        <button class="btn btn-test" onclick="testTone()">Test</button>
+      </div>
     </div>
   </div>
 
@@ -140,29 +184,45 @@ textarea:focus{outline:none;border-color:#0f3460}
 <!-- ============== SETTINGS PAGE ============== -->
 <div id="page-settings" class="page">
 
-  <div class="group">
-    <h3>KEYER</h3>
+  <div class="card">
+    <h3>Keyer</h3>
     <div class="row"><label>Tone (Hz)</label>
-      <input type="number" id="s-freq" min="200" max="2000" step="50"></div>
+      <input type="number" id="s-freq" min="200" max="2000"></div>
+    <div class="row"><label>Freq Step</label>
+      <select id="s-freq_step">
+        <option value="1">1 Hz</option>
+        <option value="5">5 Hz</option>
+        <option value="10">10 Hz</option>
+        <option value="15">15 Hz</option>
+        <option value="25">25 Hz</option>
+        <option value="50" selected>50 Hz</option>
+        <option value="100">100 Hz</option>
+      </select></div>
     <div class="row"><label>Speed (WPM)</label>
-      <input type="number" id="s-wpm" min="5" max="50" step="1"></div>
+      <input type="number" id="s-wpm" min="5" max="50"></div>
+    <div class="row"><label>WPM Step</label>
+      <select id="s-wpm_step">
+        <option value="1" selected>1 WPM</option>
+        <option value="2">2 WPM</option>
+        <option value="5">5 WPM</option>
+      </select></div>
   </div>
 
-  <div class="group">
-    <h3>OUTPUT PINS</h3>
+  <div class="card">
+    <h3>Output Pins</h3>
     <div class="row"><label>Speaker +</label>
       <input type="number" id="s-pin_spk" min="0" max="27"></div>
     <div class="row"><label>Speaker GND</label>
       <input type="number" id="s-pin_spk_gnd" min="0" max="27"></div>
     <div class="row"><label>Text TX Ground</label>
       <input type="number" id="s-pin_text_ground" min="0" max="27"></div>
-    <div class="row" style="justify-content:center;padding-top:12px">
+    <div class="btn-row" style="justify-content:center;padding-top:8px">
       <button class="btn btn-test" onclick="testTone()">Test Speaker</button>
     </div>
   </div>
 
-  <div class="group">
-    <h3>INPUT PINS</h3>
+  <div class="card">
+    <h3>Input Pins</h3>
     <div class="row"><label>DIT Paddle</label>
       <input type="number" id="s-pin_dit" min="0" max="27">
       <button class="btn-detect" onclick="startDetect('pin_dit')">Detect</button></div>
@@ -195,156 +255,142 @@ textarea:focus{outline:none;border-color:#0f3460}
 
 <!-- Detect overlay -->
 <div id="detect-overlay" class="overlay">
-  <div class="overlay-title">Press and hold the switch or paddle...</div>
+  <div class="overlay-icon">&#128268;</div>
+  <div class="overlay-title">Press and hold the switch or paddle you want to assign...</div>
   <div id="detect-status" class="overlay-status"></div>
   <button class="overlay-cancel" onclick="cancelDetect()">Cancel</button>
 </div>
 
 <script>
-/* ---- page navigation ---- */
+/* ---- page nav ---- */
 function showPage(name){
   document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});
   document.getElementById('page-'+name).classList.add('active');
-  document.getElementById('nav-tx').classList.toggle('active', name==='transmit');
-  document.getElementById('nav-set').classList.toggle('active', name==='settings');
+  document.getElementById('nav-tx').classList.toggle('active',name==='transmit');
+  document.getElementById('nav-set').classList.toggle('active',name==='settings');
   if(name==='settings') loadSettings();
 }
 
 /* ---- status polling ---- */
 function poll(){
   fetch('/api/status').then(function(r){return r.json()}).then(function(s){
-    document.getElementById('tx-freq').textContent = s.freq+' Hz';
-    document.getElementById('tx-wpm').textContent = s.wpm+' WPM';
+    document.getElementById('tx-freq').textContent=s.freq;
+    document.getElementById('tx-wpm').textContent=s.wpm;
 
-    var badge = document.getElementById('mode-badge');
-    var secIdle = document.getElementById('sec-idle');
-    var secText = document.getElementById('sec-text');
-    var secPaddle = document.getElementById('sec-paddle');
-
-    secIdle.classList.add('section-hidden');
-    secText.classList.add('section-hidden');
-    secPaddle.classList.add('section-hidden');
+    var bar=document.getElementById('mode-bar');
+    var lbl=document.getElementById('mode-label');
+    bar.className='mode-bar';
+    document.getElementById('sec-idle').classList.add('section-hidden');
+    document.getElementById('sec-text').classList.add('section-hidden');
+    document.getElementById('sec-paddle').classList.add('section-hidden');
 
     if(s.mode==='tx'){
-      badge.textContent='PADDLE'; badge.className='badge badge-tx';
-      secPaddle.classList.remove('section-hidden');
+      bar.classList.add('mode-tx'); lbl.textContent='PADDLE';
+      document.getElementById('sec-paddle').classList.remove('section-hidden');
     } else if(s.mode==='text'){
-      badge.textContent='TEXT'; badge.className='badge badge-text';
-      secText.classList.remove('section-hidden');
+      bar.classList.add('mode-text'); lbl.textContent='TEXT';
+      document.getElementById('sec-text').classList.remove('section-hidden');
     } else {
-      badge.textContent='IDLE'; badge.className='badge badge-idle';
-      secIdle.classList.remove('section-hidden');
+      bar.classList.add('mode-idle'); lbl.textContent='IDLE';
+      document.getElementById('sec-idle').classList.remove('section-hidden');
     }
 
-    document.getElementById('d-dit').className = 'dot'+(s.dit?' on':'');
-    document.getElementById('d-dah').className = 'dot'+(s.dah?' on':'');
-    document.getElementById('d-tx').className  = 'dot'+(s.key_down?' tx':'');
+    document.getElementById('d-dit').className='dot'+(s.dit?' on':'');
+    document.getElementById('d-dah').className='dot'+(s.dah?' on':'');
+    document.getElementById('d-tx').className='dot'+(s.key_down?' tx-on':'');
   }).catch(function(){});
 }
-setInterval(poll, 200);
+setInterval(poll,150);
 poll();
 
 /* ---- settings ---- */
 function loadSettings(){
   fetch('/api/config').then(function(r){return r.json()}).then(function(c){
     for(var k in c){
-      var el = document.getElementById('s-'+k);
-      if(el) el.value = c[k];
+      var el=document.getElementById('s-'+k);
+      if(el) el.value=c[k];
     }
   });
 }
 
 function saveSettings(){
-  var cfg = {};
+  var cfg={};
   document.querySelectorAll('#page-settings input[type=number]').forEach(function(el){
-    var key = el.id.replace('s-','');
-    cfg[key] = parseInt(el.value, 10);
+    var key=el.id.replace('s-','');
+    cfg[key]=parseInt(el.value,10);
+  });
+  document.querySelectorAll('#page-settings select').forEach(function(el){
+    var key=el.id.replace('s-','');
+    cfg[key]=parseInt(el.value,10);
   });
   fetch('/api/config',{
     method:'POST',
     headers:{'Content-Type':'application/json'},
     body:JSON.stringify(cfg)
   }).then(function(){
-    var t = document.getElementById('toast');
+    var t=document.getElementById('toast');
     t.classList.add('show');
     setTimeout(function(){t.classList.remove('show')},2000);
   });
 }
 
-/* ---- GPIO pin detection ---- */
-var detectField = null;
-var detectBaseline = null;
-var detectTimer = null;
+/* ---- GPIO detect ---- */
+var detectField=null,detectBaseline=null,detectTimer=null;
 
 function startDetect(field){
-  detectField = field;
-  document.getElementById('detect-status').textContent = 'Scanning...';
+  detectField=field;
+  document.getElementById('detect-status').textContent='Scanning...';
   document.getElementById('detect-overlay').classList.add('show');
-
-  // Get baseline of already-active pins
   fetch('/api/scan').then(function(r){return r.json()}).then(function(data){
-    detectBaseline = data.active || [];
+    detectBaseline=data.active||[];
     detectPoll();
-  }).catch(function(){
-    cancelDetect();
-  });
+  }).catch(function(){cancelDetect()});
 }
 
 function detectPoll(){
   if(!detectField) return;
   fetch('/api/scan').then(function(r){return r.json()}).then(function(data){
-    var active = data.active || [];
-    // Find pins that are newly active (not in baseline)
-    var newPins = active.filter(function(p){return detectBaseline.indexOf(p)<0});
-
-    if(newPins.length > 0){
-      var pin = newPins[0];
-      document.getElementById('detect-status').textContent = 'GPIO '+pin+' detected!';
-      document.getElementById('s-'+detectField).value = pin;
-      detectTimer = setTimeout(function(){
+    var active=data.active||[];
+    var newPins=active.filter(function(p){return detectBaseline.indexOf(p)<0});
+    if(newPins.length>0){
+      var pin=newPins[0];
+      document.getElementById('detect-status').textContent='GPIO '+pin+' detected!';
+      document.getElementById('s-'+detectField).value=pin;
+      detectTimer=setTimeout(function(){
         document.getElementById('detect-overlay').classList.remove('show');
-        detectField = null;
-      }, 800);
+        detectField=null;
+      },800);
     } else {
-      // Show currently active pins for reference
-      if(active.length > 0){
-        document.getElementById('detect-status').textContent =
-          'Active: GPIO '+active.join(', ')+' (waiting for new...)';
+      if(active.length>0){
+        document.getElementById('detect-status').textContent=
+          'Active: GPIO '+active.join(', ')+' (press new...)';
       } else {
-        document.getElementById('detect-status').textContent = 'Scanning...';
+        document.getElementById('detect-status').textContent='Scanning...';
       }
-      detectTimer = setTimeout(detectPoll, 300);
+      detectTimer=setTimeout(detectPoll,250);
     }
-  }).catch(function(){
-    detectTimer = setTimeout(detectPoll, 300);
-  });
+  }).catch(function(){detectTimer=setTimeout(detectPoll,300)});
 }
 
 function cancelDetect(){
-  detectField = null;
+  detectField=null;
   if(detectTimer) clearTimeout(detectTimer);
   document.getElementById('detect-overlay').classList.remove('show');
 }
 
 /* ---- send CW ---- */
 function sendText(){
-  var text = document.getElementById('cw-text').value.trim();
+  var text=document.getElementById('cw-text').value.trim();
   if(!text) return;
-  fetch('/api/send',{
-    method:'POST',
+  fetch('/api/send',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({text:text})
-  });
+    body:JSON.stringify({text:text})});
 }
-
 function stopSend(){
-  fetch('/api/send',{
-    method:'POST',
+  fetch('/api/send',{method:'POST',
     headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({text:''})
-  });
+    body:JSON.stringify({text:''})});
 }
-
 function testTone(){
   fetch('/api/test',{method:'POST'});
 }

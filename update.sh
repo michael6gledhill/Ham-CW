@@ -19,10 +19,14 @@ else
 fi
 
 # 2. Install Python dependencies (only if missing)
-dpkg -s python3-rpi.gpio &>/dev/null || {
+dpkg -s python3-pigpio &>/dev/null || {
     echo "[ham-cw] installing dependencies..."
-    sudo apt-get install -y --no-install-recommends python3-rpi.gpio
+    sudo apt-get install -y --no-install-recommends python3-pigpio pigpio
 }
+
+# Ensure pigpio daemon is running
+sudo systemctl enable pigpiod 2>/dev/null
+sudo systemctl start pigpiod 2>/dev/null
 
 # 3. Update systemd service, daemon-reload, enable, restart
 echo "[ham-cw] updating systemd service..."

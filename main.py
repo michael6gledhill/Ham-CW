@@ -24,14 +24,11 @@ class _State:
     key_down = False
     dit = False
     dah = False
-    mode = 'idle'       # 'idle', 'tx', 'text'
+    mode = 'idle'
     sending = False
 
 _state = _State()
 
-# ---------------------------------------------------------------------------
-#  Module-level singletons
-# ---------------------------------------------------------------------------
 _gpio = GpioHandler()
 _shutdown = threading.Event()
 
@@ -86,6 +83,8 @@ def _get_status():
     return {
         'wpm': cfg['wpm'],
         'freq': cfg['freq'],
+        'freq_step': cfg['freq_step'],
+        'wpm_step': cfg['wpm_step'],
         'mode': _state.mode,
         'dit': _state.dit,
         'dah': _state.dah,
@@ -100,9 +99,6 @@ def _update_config(updates):
     _gpio.setup(cfg)
 
 
-# ---------------------------------------------------------------------------
-#  GPIO switch callbacks
-# ---------------------------------------------------------------------------
 def _on_tone_adjust(direction):
     config.adjust_param('freq', direction)
 
@@ -127,19 +123,16 @@ def _keyer_loop():
         cfg = config.get_config()
         keyer.update(cfg['wpm'], WEIGHT)
 
-        # -- read mode switches ------------------------------------------
         _state.mode = _gpio.read_mode()
 
-        # -- read paddles ------------------------------------------------
         dit_pressed = _gpio.read_dit()
         dah_pressed = _gpio.read_dah()
         _state.dit = dit_pressed
         _state.dah = dah_pressed
 
-        # -- poll parameter switches -------------------------------------
         _gpio.poll_switches()
 
-        # -- hold both paddles 3 s -> announce IP ------------------------
+        # Hold both paddles 3s -> announce IP
         if dit_pressed and dah_pressed:
             both_timer += dt
             if both_timer >= 3.0:
@@ -148,12 +141,12 @@ def _keyer_loop():
         else:
             both_timer = 0.0
 
-        # -- paddle press cancels text playback --------------------------
+        # Paddle press cancels text playback
         if (dit_pressed or dah_pressed) and _send_queue:
             _stop_send()
             sq_action = None
 
-        # -- process send queue ------------------------------------------
+        # Process send queue
         if sq_action is not None and now >= sq_end:
             sq_action = None
         if sq_action is None:
@@ -165,26 +158,24 @@ def _keyer_loop():
 
         _state.sending = sq_action is not None or bool(_send_queue)
 
-        # -- determine key state based on mode ---------------------------
+        # Determine key state
         key_down = False
 
         if _state.mode == 'tx':
-            # Paddle mode: paddles drive keyer + speaker
             if sq_action is not None:
                 key_down = (sq_action == 'on')
             else:
                 key_down = keyer.tick(dt, dit_pressed, dah_pressed)
 
         elif _state.mode == 'text':
-            # Text mode: only send queue drives keying
             key_down = (sq_action == 'on') if sq_action is not None else False
 
         else:
-            # Idle: no keying (send queue still processes for test tone)
+            # Idle: test tone still works
             if sq_action is not None:
                 key_down = (sq_action == 'on')
 
-        # -- update speaker on state change ------------------------------
+        # Speaker
         if key_down != _state.key_down:
             _state.key_down = key_down
             if key_down:
@@ -192,10 +183,9 @@ def _keyer_loop():
             else:
                 _gpio.speaker_off()
 
-        # -- TX output: ground pin only in text mode when keying ---------
-        _gpio.set_text_ground(key_down and _state.mode == 'text')
+        # Ground text pin for entire transmission, not per-element
+        _gpio.set_text_ground(_state.sending and _state.mode == 'text')
 
-        # -- sleep remainder of tick -------------------------------------
         elapsed = time.monotonic() - now
         remaining = dt - elapsed
         if remaining > 0:
