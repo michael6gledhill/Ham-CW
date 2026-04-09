@@ -313,7 +313,7 @@ def _stop_config_mode():
 
 
 def _gpio_scan_loop():
-    """Scan unassigned GPIO pins for a transition to LOW."""
+    """Detect GPIO pin change using hardware edge callbacks (instant)."""
     if not HAS_GPIO:
         state.config_mode = False
         return
@@ -333,38 +333,49 @@ def _gpio_scan_loop():
 
     candidates = [p for p in range(2, 28) if p not in assigned]
 
-    # Open candidate pins and record initial states
-    scan_devs = {}
-    initial = {}
+    # Event to signal detection from any callback
+    detected_event = threading.Event()
+    detected_pin = [None]
+
+    def make_callback(pin_num):
+        """Return a callback that records which pin fired."""
+        def _cb():
+            if detected_pin[0] is None:
+                detected_pin[0] = pin_num
+                detected_event.set()
+        return _cb
+
+    # Open all candidate pins with edge callbacks on BOTH edges
+    scan_devs = []
     for pin in candidates:
         try:
-            dev = DigitalInputDevice(pin, pull_up=True)
-            initial[pin] = dev.value    # 0 = inactive (HIGH), 1 = active (LOW/grounded)
-            scan_devs[pin] = dev
+            dev = DigitalInputDevice(pin, pull_up=True, bounce_time=0.04)
+            cb = make_callback(pin)
+            dev.when_activated = cb
+            dev.when_deactivated = cb
+            scan_devs.append(dev)
         except Exception:
             continue
 
-    # Poll for changes (20 Hz)
-    while state.config_mode and not _shutdown.is_set():
-        for pin, dev in scan_devs.items():
-            try:
-                if dev.value == 1 and initial[pin] == 0:
-                    # Pin activated (grounded) -- detected!
-                    state.config_detected = pin
-                    settings.update({awaiting: pin})
-                    state.config_mode = False
-                    state.config_awaiting = None
-                    break
-            except Exception:
-                continue
-        else:
-            time.sleep(0.05)
-            continue
-        break    # detected, exit outer loop
+    print(f"morse-keyer: edge-watching {len(scan_devs)} pins for {awaiting}")
 
-    # Clean up scan devices
-    for dev in scan_devs.values():
+    # Wait for any edge callback to fire (or cancellation)
+    while state.config_mode and not _shutdown.is_set():
+        if detected_event.wait(timeout=0.1):
+            pin = detected_pin[0]
+            if pin is not None:
+                print(f"morse-keyer: detected GPIO {pin} for {awaiting}")
+                state.config_detected = pin
+                settings.update({awaiting: pin})
+                state.config_mode = False
+                state.config_awaiting = None
+            break
+
+    # Clean up all scan devices
+    for dev in scan_devs:
         try:
+            dev.when_activated = None
+            dev.when_deactivated = None
             dev.close()
         except Exception:
             pass
