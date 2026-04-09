@@ -339,7 +339,7 @@ def _gpio_scan_loop():
     for pin in candidates:
         try:
             dev = DigitalInputDevice(pin, pull_up=True)
-            initial[pin] = dev.value    # 1 = HIGH (idle), 0 = LOW (active)
+            initial[pin] = dev.value    # 0 = inactive (HIGH), 1 = active (LOW/grounded)
             scan_devs[pin] = dev
         except Exception:
             continue
@@ -348,8 +348,8 @@ def _gpio_scan_loop():
     while state.config_mode and not _shutdown.is_set():
         for pin, dev in scan_devs.items():
             try:
-                if dev.value == 0 and initial[pin] == 1:
-                    # Pin went LOW -- detected!
+                if dev.value == 1 and initial[pin] == 0:
+                    # Pin activated (grounded) -- detected!
                     state.config_detected = pin
                     settings.update({awaiting: pin})
                     state.config_mode = False
