@@ -46,10 +46,15 @@ def get_timing(wpm):
 #  Iambic Mode-B keyer state machine
 # ---------------------------------------------------------------------------
 class Keyer:
-    """Iambic Mode-B keyer.
+    """Iambic Mode-B keyer with deadline-based timing.
 
-    Pure logic -- no I/O.  Call tick() every ~1 ms with paddle states.
-    Returns True when the tone should be ON.
+    Pure logic -- no I/O.  Call tick(now, dit, dah) where *now* is
+    time.monotonic().  Returns True when the tone should be ON.
+
+    Uses absolute deadlines instead of elapsed-time accumulation so
+    that polling jitter never makes elements longer or shorter than
+    they should be.  Deadlines chain from one to the next, so any
+    overshoot in one phase is automatically compensated in the next.
 
     States:
         IDLE    -- waiting for a paddle press
@@ -68,8 +73,7 @@ class Keyer:
         self.state = self.IDLE
         self.element = None
         self.mem = None
-        self.elapsed = 0.0
-        self.duration = 0.0
+        self.deadline = 0.0
         self._update_timing(wpm)
 
     def _update_timing(self, wpm):
@@ -102,15 +106,15 @@ class Keyer:
         self.mem = None
         return m if m else self._pick_live(dit, dah)
 
-    def tick(self, dt, dit, dah):
-        """Advance keyer by *dt* seconds.  Returns True when tone is ON."""
+    def tick(self, now, dit, dah):
+        """Advance keyer at monotonic time *now*.  Returns True = tone ON."""
         if self.state == self.IDLE:
             nxt = self._pick_live(dit, dah)
             if nxt is None:
                 return False
             self.element = nxt
-            self.duration = self.dit_len if nxt == 'dit' else self.dah_len
-            self.elapsed = 0.0
+            dur = self.dit_len if nxt == 'dit' else self.dah_len
+            self.deadline = now + dur
             self.state = self.SENDING
             return True
 
@@ -119,25 +123,25 @@ class Keyer:
                 self.mem = 'dah'
             elif self.element == 'dah' and dit:
                 self.mem = 'dit'
-            self.elapsed += dt
-            if self.elapsed < self.duration:
+            if now < self.deadline:
                 return True
-            self.elapsed = 0.0
-            self.duration = self.gap_len
+            # Element finished -> inter-element gap
+            # Chain from previous deadline so jitter doesn't accumulate
+            self.deadline += self.gap_len
             self.state = self.SPACING
             return False
 
         if self.state == self.SPACING:
-            self.elapsed += dt
-            if self.elapsed < self.duration:
+            if now < self.deadline:
                 return False
             nxt = self._pick_mem(dit, dah)
             if nxt is None:
                 self.state = self.IDLE
                 return False
             self.element = nxt
-            self.duration = self.dit_len if nxt == 'dit' else self.dah_len
-            self.elapsed = 0.0
+            dur = self.dit_len if nxt == 'dit' else self.dah_len
+            # Chain from gap deadline for precise total cycle time
+            self.deadline += dur
             self.state = self.SENDING
             return True
 
