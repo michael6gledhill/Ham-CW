@@ -142,6 +142,25 @@ def _read_pin(role):
     return False
 
 
+def _read_paddles():
+    """Read dit and dah paddles with a single lock acquisition."""
+    with _gpio_lock:
+        dit_dev = _gpio_devs.get('pin_dot')
+        dah_dev = _gpio_devs.get('pin_dash')
+    d = h = False
+    if dit_dev:
+        try:
+            d = dit_dev.is_pressed
+        except Exception:
+            pass
+    if dah_dev:
+        try:
+            h = dah_dev.is_pressed
+        except Exception:
+            pass
+    return d, h
+
+
 def _speaker_on(freq):
     with _gpio_lock:
         dev = _gpio_devs.get('pin_speaker_1')
@@ -227,21 +246,41 @@ def _switch_poll_loop():
 
 
 # ---------------------------------------------------------------------------
-#  Keyer loop (1 ms tick -- paddles need <10 ms latency)
+#  Keyer loop — precision-timed with spin-wait at deadlines
+#
+#  On a Pi Zero, time.sleep(0.001) can sleep 5-20 ms.  To keep every
+#  dit and dah the same length we:
+#    * sleep for the BULK of each element / gap  (yields CPU to Flask)
+#    * spin-wait the last ~1 ms to hit the deadline within microseconds
+#    * poll paddles during SENDING for iambic squeeze memory
 # ---------------------------------------------------------------------------
 def _keyer_loop():
     sq_action = None
     sq_end = 0.0
 
+    # Cached config — refreshed every 100 ms, not every tick
+    cfg = settings.get()
+    wpm = cfg['wpm']
+    freq = cfg['frequency']
+    keyer.update(wpm)
+    cfg_next = time.monotonic() + 0.1
+
+    mono = time.monotonic                  # local ref for speed
+
     while not _shutdown.is_set():
-        now = time.monotonic()
+        now = mono()
 
-        cfg = settings.get()
-        keyer.update(cfg['wpm'])
+        # ---- refresh config periodically ----------------------------
+        if now >= cfg_next:
+            cfg = settings.get()
+            if cfg['wpm'] != wpm:
+                wpm = cfg['wpm']
+                keyer.update(wpm)
+            freq = cfg['frequency']
+            cfg_next = now + 0.1
 
-        # Read paddles
-        dit = _read_pin('pin_dot')
-        dah = _read_pin('pin_dash')
+        # ---- read paddles -------------------------------------------
+        dit, dah = _read_paddles()
         state.dit = dit
         state.dah = dah
 
@@ -250,7 +289,7 @@ def _keyer_loop():
             _stop_send()
             sq_action = None
 
-        # Process send queue
+        # ---- process send queue -------------------------------------
         if sq_action is not None and now >= sq_end:
             sq_action = None
         if sq_action is None:
@@ -259,30 +298,66 @@ def _keyer_loop():
                     act, dur = _send_queue.pop(0)
                     sq_action = act
                     sq_end = now + dur
-
         state.sending = sq_action is not None or bool(_send_queue)
 
-        # Key state — paddles always produce tone regardless of mode
-        key_down = False
+        # ---- determine key state ------------------------------------
         if sq_action is not None:
             key_down = (sq_action == 'on')
         else:
             key_down = keyer.tick(now, dit, dah)
 
-        # Drive speaker + audio engine
+        # ---- drive speaker + audio on transitions -------------------
         if key_down != state.key_down:
             state.key_down = key_down
             if key_down:
-                _speaker_on(cfg['frequency'])
+                _speaker_on(freq)
                 audio.key_on()
             else:
                 _speaker_off()
                 audio.key_off()
 
-        # Sleep to maintain ~1 ms tick rate
-        remaining = 0.001 - (time.monotonic() - now)
-        if remaining > 0:
-            time.sleep(remaining)
+        # ---- precision wait for next deadline -----------------------
+        if keyer.state == Keyer.SENDING:
+            # Poll paddles while element plays (iambic Mode-B memory).
+            # Sleep in short chunks so Flask still gets CPU time,
+            # then spin-wait the last fraction for an exact transition.
+            deadline = keyer.deadline
+            while True:
+                remain = deadline - mono()
+                if remain <= 0.0005:
+                    break
+                d, h = _read_paddles()
+                state.dit = d
+                state.dah = h
+                if keyer.element == 'dit' and h:
+                    keyer.mem = 'dah'
+                elif keyer.element == 'dah' and d:
+                    keyer.mem = 'dit'
+                if remain > 0.003:
+                    time.sleep(0.001)
+            while mono() < deadline:
+                pass
+
+        elif keyer.state == Keyer.SPACING:
+            # Inter-element gap — just wait precisely.
+            deadline = keyer.deadline
+            remain = deadline - mono()
+            if remain > 0.002:
+                time.sleep(remain - 0.001)
+            while mono() < deadline:
+                pass
+
+        elif sq_action is not None:
+            # Send-queue element — wait for its deadline.
+            remain = sq_end - mono()
+            if remain > 0.002:
+                time.sleep(remain - 0.001)
+            while mono() < sq_end:
+                pass
+
+        else:
+            # IDLE — poll paddles at ~1 ms rate
+            time.sleep(0.001)
 
 
 # ---------------------------------------------------------------------------
