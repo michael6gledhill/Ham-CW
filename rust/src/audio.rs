@@ -212,13 +212,15 @@ fn audio_loop_alsa(running: &AtomicBool, state: &AudioState) -> Result<(), Strin
     for dev in &devices {
         match PCM::new(dev, Direction::Playback, false) {
             Ok(pcm) => {
-                let hwp = HwParams::any(&pcm).map_err(|e| e.to_string())?;
-                hwp.set_channels(1).map_err(|e| e.to_string())?;
-                hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest).map_err(|e| e.to_string())?;
-                hwp.set_format(Format::s16()).map_err(|e| e.to_string())?;
-                hwp.set_access(Access::RWInterleaved).map_err(|e| e.to_string())?;
-                hwp.set_period_size(BUFFER_SIZE as i32, ValueOr::Nearest).map_err(|e| e.to_string())?;
-                pcm.hw_params(&hwp).map_err(|e| e.to_string())?;
+                {
+                    let hwp = HwParams::any(&pcm).map_err(|e| e.to_string())?;
+                    hwp.set_channels(1).map_err(|e| e.to_string())?;
+                    hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest).map_err(|e| e.to_string())?;
+                    hwp.set_format(Format::s16()).map_err(|e| e.to_string())?;
+                    hwp.set_access(Access::RWInterleaved).map_err(|e| e.to_string())?;
+                    hwp.set_period_size(BUFFER_SIZE as i32, ValueOr::Nearest).map_err(|e| e.to_string())?;
+                    pcm.hw_params(&hwp).map_err(|e| e.to_string())?;
+                } // hwp dropped here, releasing borrow on pcm
                 println!("morse-keyer: audio via ALSA ({dev})");
                 pcm_opt = Some(pcm);
                 break;
