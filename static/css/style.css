@@ -318,6 +318,18 @@ main { width: 100%; max-width: 540px; }
   color: var(--amber);
   font-style: italic;
 }
+.gpio-row .pin-manual {
+  width: 56px;
+  padding: 5px 4px;
+  text-align: center;
+  font-size: 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--fg);
+  outline: none;
+}
+.gpio-row .pin-manual:focus { border-color: var(--blue); }
 .btn-detect {
   padding: 6px 12px;
   font-size: 0.78rem;

@@ -47,6 +47,7 @@ function buildGpioList() {
     row.innerHTML =
       `<span class="gpio-label">${r.label}</span>` +
       `<span class="gpio-pin" id="gpio-val-${r.key}">--</span>` +
+      `<input type="number" class="pin-input pin-manual" id="gpio-manual-${r.key}" min="0" max="27" placeholder="Pin">` +
       `<button class="btn-detect" data-role="${r.key}">Detect</button>`;
     list.appendChild(row);
   });
@@ -72,9 +73,11 @@ async function loadSettings() {
 
   AUTO_ROLES.forEach(r => {
     const el = document.getElementById('gpio-val-' + r.key);
+    const manual = document.getElementById('gpio-manual-' + r.key);
     const pin = cfg[r.key];
     el.textContent = pin ? 'GPIO ' + pin : 'None';
     el.classList.remove('awaiting');
+    if (manual) manual.value = pin || '';
   });
 
   document.getElementById('gpio-pin_speaker_1').value = cfg.pin_speaker_1 || 0;
@@ -326,6 +329,13 @@ document.getElementById('btn-save').addEventListener('click', async () => {
     pin_speaker_1: parseInt(document.getElementById('gpio-pin_speaker_1').value) || 0,
     pin_speaker_2: parseInt(document.getElementById('gpio-pin_speaker_2').value) || 0,
   };
+  // Include manual pin entries for all auto-detect roles
+  AUTO_ROLES.forEach(r => {
+    const el = document.getElementById('gpio-manual-' + r.key);
+    if (el && el.value !== '') {
+      updates[r.key] = parseInt(el.value) || 0;
+    }
+  });
   await api('POST', '/settings', updates);
   await api('POST', '/save-settings');
   loadSettings();
