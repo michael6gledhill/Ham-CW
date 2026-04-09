@@ -18,6 +18,7 @@ from flask import Flask, render_template, jsonify, request
 import settings
 from morse import Keyer, text_to_elements
 from audio import AudioEngine
+from gpio_detector import GPIODetector
 
 # ---------------------------------------------------------------------------
 #  GPIO setup (gpiozero with pigpio factory for DMA PWM)
@@ -77,6 +78,9 @@ _sq_lock = threading.Lock()
 
 # Shutdown
 _shutdown = threading.Event()
+
+# GPIO detector (RPi.GPIO raw polling)
+detector = GPIODetector()
 
 # ---------------------------------------------------------------------------
 #  GPIO management
@@ -288,99 +292,44 @@ def _keyer_loop():
 
 
 # ---------------------------------------------------------------------------
-#  GPIO auto-detection
+#  GPIO auto-detection (delegates to GPIODetector)
 # ---------------------------------------------------------------------------
-def _start_config_mode(role):
-    """Enter GPIO auto-detection mode for *role*."""
+def _start_detection(role):
+    """Start active GPIO polling for a role."""
     state.config_mode = True
     state.config_awaiting = role
     state.config_detected = None
 
-    # Close all GPIO so we can scan any pin
+    # Close gpiozero devices so RPi.GPIO can access pins
     _close_gpio()
 
-    t = threading.Thread(target=_gpio_scan_loop, daemon=True,
-                         name='gpio-scan')
-    t.start()
+    # Figure out which pins are assigned to OTHER roles
+    cfg = settings.get()
+    exclude = set()
+    for r in settings.GPIO_PINS:
+        if r != role:
+            pin = cfg.get(r, 0)
+            if pin > 0:
+                exclude.add(pin)
+
+    detector.start(role=role, exclude_pins=exclude)
 
 
-def _stop_config_mode():
-    """Cancel GPIO auto-detection."""
+def _stop_detection():
+    """Stop detection and restore normal GPIO."""
+    detector.stop()
     state.config_mode = False
     state.config_awaiting = None
-    time.sleep(0.15)   # let scan thread exit
     setup_gpio()
 
 
-def _gpio_scan_loop():
-    """Detect GPIO pin change using hardware edge callbacks (instant)."""
-    if not HAS_GPIO:
-        state.config_mode = False
-        return
-
-    from gpiozero import DigitalInputDevice
-
-    cfg = settings.get()
-    awaiting = state.config_awaiting
-
-    # Pins already assigned to OTHER roles
-    assigned = set()
-    for role in settings.GPIO_PINS:
-        if role != awaiting:
-            pin = cfg.get(role, 0)
-            if pin > 0:
-                assigned.add(pin)
-
-    candidates = [p for p in range(2, 28) if p not in assigned]
-
-    # Event to signal detection from any callback
-    detected_event = threading.Event()
-    detected_pin = [None]
-
-    def make_callback(pin_num):
-        """Return a callback that records which pin fired."""
-        def _cb():
-            if detected_pin[0] is None:
-                detected_pin[0] = pin_num
-                detected_event.set()
-        return _cb
-
-    # Open all candidate pins with edge callbacks on BOTH edges
-    scan_devs = []
-    for pin in candidates:
-        try:
-            dev = DigitalInputDevice(pin, pull_up=True, bounce_time=0.04)
-            cb = make_callback(pin)
-            dev.when_activated = cb
-            dev.when_deactivated = cb
-            scan_devs.append(dev)
-        except Exception:
-            continue
-
-    print(f"morse-keyer: edge-watching {len(scan_devs)} pins for {awaiting}")
-
-    # Wait for any edge callback to fire (or cancellation)
-    while state.config_mode and not _shutdown.is_set():
-        if detected_event.wait(timeout=0.1):
-            pin = detected_pin[0]
-            if pin is not None:
-                print(f"morse-keyer: detected GPIO {pin} for {awaiting}")
-                state.config_detected = pin
-                settings.update({awaiting: pin})
-                state.config_mode = False
-                state.config_awaiting = None
-            break
-
-    # Clean up all scan devices
-    for dev in scan_devs:
-        try:
-            dev.when_activated = None
-            dev.when_deactivated = None
-            dev.close()
-        except Exception:
-            pass
-
-    # Re-setup normal GPIO
+def _confirm_detection(pin, role):
+    """Confirm a detected pin and save it."""
+    detector.stop()
+    state.config_detected = pin
+    settings.update({role: pin})
+    state.config_mode = False
+    state.config_awaiting = None
     setup_gpio()
 
 
@@ -401,7 +350,6 @@ def get_settings():
 def update_settings():
     data = request.get_json(silent=True) or {}
     settings.update(data)
-    # Apply frequency change to audio engine
     cfg = settings.get()
     audio.set_frequency(cfg['frequency'])
     return jsonify({'ok': True})
@@ -424,29 +372,49 @@ def gpio_status():
     })
 
 
-@app.route('/start-config-mode', methods=['POST'])
-def start_config_mode():
+# -- Detection API (new) --
+
+@app.route('/api/start-detection', methods=['POST'])
+def api_start_detection():
     data = request.get_json(silent=True) or {}
     role = data.get('role', '')
     if role not in settings.AUTO_DETECT_PINS:
         return jsonify({'error': 'invalid role'}), 400
-    _start_config_mode(role)
-    return jsonify({'ok': True})
+    _start_detection(role)
+    return jsonify({'status': 'detecting', 'role': role})
 
 
-@app.route('/stop-config-mode', methods=['POST'])
-def stop_config_mode():
-    _stop_config_mode()
-    return jsonify({'ok': True})
+@app.route('/api/detection-status', methods=['GET'])
+def api_detection_status():
+    status_data = detector.get_status()
+    # Also include which pins are already assigned (for duplicate warning)
+    cfg = settings.get()
+    assigned = {}
+    for r in settings.GPIO_PINS:
+        pin = cfg.get(r, 0)
+        if pin > 0:
+            assigned[str(pin)] = r
+    status_data['assigned'] = assigned
+    return jsonify(status_data)
 
 
-@app.route('/config-status', methods=['GET'])
-def config_status():
-    return jsonify({
-        'config_mode': state.config_mode,
-        'awaiting':    state.config_awaiting,
-        'detected':    state.config_detected,
-    })
+@app.route('/api/stop-detection', methods=['POST'])
+def api_stop_detection():
+    _stop_detection()
+    return jsonify({'status': 'stopped'})
+
+
+@app.route('/api/confirm-gpio', methods=['POST'])
+def api_confirm_gpio():
+    data = request.get_json(silent=True) or {}
+    pin = int(data.get('pin', 0))
+    role = data.get('role', '')
+    if role not in settings.AUTO_DETECT_PINS:
+        return jsonify({'error': 'invalid role'}), 400
+    if not (2 <= pin <= 27):
+        return jsonify({'error': 'invalid pin'}), 400
+    _confirm_detection(pin, role)
+    return jsonify({'ok': True, 'pin': pin, 'role': role})
 
 
 # -- Extra convenience endpoints for the web UI --

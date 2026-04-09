@@ -13,8 +13,13 @@ const AUTO_ROLES = [
   { key: 'pin_dash',       label: 'Dash Paddle' },
 ];
 
+// Role key -> friendly label lookup
+const ROLE_LABELS = {};
+AUTO_ROLES.forEach(r => { ROLE_LABELS[r.key] = r.label; });
+
 let cfg = {};
-let configPolling = null;
+let detectPollTimer = null;
+let detectingRole = null;
 
 /* ================================================================
    API helpers
@@ -57,7 +62,7 @@ function openSettings()  {
 }
 function closeSettings() {
   document.getElementById('settings-overlay').classList.add('hidden');
-  stopConfigPolling();
+  cancelDetection();
 }
 
 async function loadSettings() {
@@ -65,7 +70,6 @@ async function loadSettings() {
   document.getElementById('set-freq').textContent = cfg.frequency + ' Hz';
   document.getElementById('set-wpm').textContent  = cfg.wpm + ' WPM';
 
-  // Auto-detect pins
   AUTO_ROLES.forEach(r => {
     const el = document.getElementById('gpio-val-' + r.key);
     const pin = cfg[r.key];
@@ -73,13 +77,12 @@ async function loadSettings() {
     el.classList.remove('awaiting');
   });
 
-  // Speaker pins
   document.getElementById('gpio-pin_speaker_1').value = cfg.pin_speaker_1 || 0;
   document.getElementById('gpio-pin_speaker_2').value = cfg.pin_speaker_2 || 0;
 }
 
 /* ================================================================
-   Adjust buttons (settings panel)
+   Adjust buttons
    ================================================================ */
 
 document.addEventListener('click', async e => {
@@ -98,75 +101,227 @@ document.addEventListener('click', async e => {
 });
 
 /* ================================================================
-   GPIO auto-detection
+   GPIO Detection — full rewrite with active polling
    ================================================================ */
+
+// -- Detection modal helpers --
+
+function showDetectModal(roleName) {
+  const modal   = document.getElementById('detect-modal');
+  const title   = document.getElementById('detect-title');
+  const pinList = document.getElementById('detect-pin-list');
+  const msg     = document.getElementById('detect-msg');
+  const confirm = document.getElementById('detect-confirm-area');
+  const timer   = document.getElementById('detect-timer');
+
+  title.textContent = roleName;
+  msg.textContent = 'Flip the switch now...';
+  msg.className = 'detect-msg';
+  pinList.innerHTML = '';
+  confirm.classList.add('hidden');
+  timer.textContent = '';
+  modal.classList.remove('hidden');
+}
+
+function hideDetectModal() {
+  document.getElementById('detect-modal').classList.add('hidden');
+}
+
+// -- Start detection for a role --
 
 document.addEventListener('click', async e => {
   const btn = e.target.closest('.btn-detect');
   if (!btn) return;
+
   const role = btn.dataset.role;
+  const label = ROLE_LABELS[role] || role;
 
   // Disable all detect buttons
   document.querySelectorAll('.btn-detect').forEach(b => b.disabled = true);
 
-  // Show config banner
-  const banner = document.getElementById('config-status');
-  const msg    = document.getElementById('config-msg');
-  banner.classList.remove('hidden');
-  msg.textContent = 'Flip ' + btn.closest('.gpio-row').querySelector('.gpio-label').textContent + ' now...';
-
-  // Mark pin display
+  // Mark the pin display
   const pinEl = document.getElementById('gpio-val-' + role);
-  pinEl.textContent = 'AWAITING';
+  pinEl.textContent = 'DETECTING';
   pinEl.classList.add('awaiting');
 
-  await api('POST', '/start-config-mode', { role });
+  // Show modal
+  showDetectModal(label);
+  detectingRole = role;
 
-  // Poll for result
-  startConfigPolling(role);
+  // Tell backend to start polling
+  await api('POST', '/api/start-detection', { role });
+
+  // Start frontend polling at 200ms
+  startDetectPolling(role);
 });
 
-function startConfigPolling(role) {
-  stopConfigPolling();
-  configPolling = setInterval(async () => {
-    const s = await api('GET', '/config-status');
-    if (!s.config_mode) {
-      stopConfigPolling();
-      const banner = document.getElementById('config-status');
-      banner.classList.add('hidden');
-      document.querySelectorAll('.btn-detect').forEach(b => b.disabled = false);
-
-      if (s.detected !== null) {
-        const pinEl = document.getElementById('gpio-val-' + role);
-        pinEl.textContent = 'GPIO ' + s.detected;
-        pinEl.classList.remove('awaiting');
-      }
-      loadSettings();  // refresh all values
+function startDetectPolling(role) {
+  stopDetectPolling();
+  detectPollTimer = setInterval(async () => {
+    let data;
+    try {
+      data = await api('GET', '/api/detection-status');
+    } catch (e) {
+      return; // network hiccup, keep polling
     }
-  }, 500);
+
+    const msg     = document.getElementById('detect-msg');
+    const pinList = document.getElementById('detect-pin-list');
+    const confirm = document.getElementById('detect-confirm-area');
+    const timer   = document.getElementById('detect-timer');
+
+    // Show elapsed time
+    if (data.detecting) {
+      timer.textContent = data.elapsed + 's';
+    }
+
+    // Timed out?
+    if (data.timed_out) {
+      stopDetectPolling();
+      msg.textContent = 'No input detected. Try again?';
+      msg.className = 'detect-msg detect-timeout';
+      confirm.classList.add('hidden');
+      pinList.innerHTML = '';
+      // Show retry button
+      const retryBtn = document.getElementById('detect-retry');
+      if (retryBtn) retryBtn.classList.remove('hidden');
+      return;
+    }
+
+    // Error?
+    if (data.error) {
+      stopDetectPolling();
+      msg.textContent = 'Error: ' + data.error;
+      msg.className = 'detect-msg detect-error';
+      return;
+    }
+
+    // Detected pins?
+    if (data.detected_pins && data.detected_pins.length > 0) {
+      // Show the live pin list
+      pinList.innerHTML = data.detected_pins.map(p => {
+        let extra = '';
+        if (data.assigned && data.assigned[String(p)]) {
+          const assignedRole = data.assigned[String(p)];
+          if (assignedRole !== role) {
+            extra = ` <span class="detect-warn">(assigned to ${ROLE_LABELS[assignedRole] || assignedRole})</span>`;
+          }
+        }
+        return `<div class="detect-pin-item">GPIO ${p}${extra}</div>`;
+      }).join('');
+
+      // Show confirmation for the first detected pin
+      const firstPin = data.detected_pins[0];
+      const confirmPin = document.getElementById('detect-confirm-pin');
+      const confirmRole = document.getElementById('detect-confirm-role');
+
+      // Check for duplicate
+      let dupWarn = '';
+      if (data.assigned && data.assigned[String(firstPin)]) {
+        const ar = data.assigned[String(firstPin)];
+        if (ar !== role) {
+          dupWarn = ` (currently ${ROLE_LABELS[ar] || ar})`;
+        }
+      }
+      confirmPin.textContent = 'GPIO ' + firstPin + dupWarn;
+      confirm.classList.remove('hidden');
+      msg.textContent = 'Pin detected!';
+      msg.className = 'detect-msg detect-found';
+
+      // Stop polling once we have a detection — wait for user confirm/reject
+      stopDetectPolling();
+    }
+
+    // Not detecting anymore and no pins?
+    if (!data.detecting && data.detected_pins.length === 0 && !data.timed_out) {
+      stopDetectPolling();
+      finishDetection();
+    }
+  }, 200);
 }
 
-function stopConfigPolling() {
-  if (configPolling) {
-    clearInterval(configPolling);
-    configPolling = null;
+function stopDetectPolling() {
+  if (detectPollTimer) {
+    clearInterval(detectPollTimer);
+    detectPollTimer = null;
   }
 }
 
-document.getElementById('btn-cancel-config').addEventListener('click', async () => {
-  await api('POST', '/stop-config-mode');
-  stopConfigPolling();
-  document.getElementById('config-status').classList.add('hidden');
-  document.querySelectorAll('.btn-detect').forEach(b => b.disabled = false);
+// -- Confirm detected pin --
+
+document.getElementById('detect-yes').addEventListener('click', async () => {
+  const pinText = document.getElementById('detect-confirm-pin').textContent;
+  const pinMatch = pinText.match(/GPIO (\d+)/);
+  if (!pinMatch || !detectingRole) return;
+
+  const pin = parseInt(pinMatch[1]);
+  await api('POST', '/api/confirm-gpio', { pin, role: detectingRole });
+  finishDetection();
   loadSettings();
 });
+
+// -- Reject — keep waiting for a different pin --
+
+document.getElementById('detect-no').addEventListener('click', async () => {
+  // Restart detection for the same role
+  const role = detectingRole;
+  if (!role) return;
+
+  // Clear the confirm area and restart
+  document.getElementById('detect-confirm-area').classList.add('hidden');
+  document.getElementById('detect-pin-list').innerHTML = '';
+  document.getElementById('detect-msg').textContent = 'Flip the switch now...';
+  document.getElementById('detect-msg').className = 'detect-msg';
+
+  await api('POST', '/api/stop-detection');
+  await api('POST', '/api/start-detection', { role });
+  startDetectPolling(role);
+});
+
+// -- Retry after timeout --
+
+document.getElementById('detect-retry').addEventListener('click', async () => {
+  const role = detectingRole;
+  if (!role) return;
+
+  document.getElementById('detect-retry').classList.add('hidden');
+  document.getElementById('detect-msg').textContent = 'Flip the switch now...';
+  document.getElementById('detect-msg').className = 'detect-msg';
+  document.getElementById('detect-pin-list').innerHTML = '';
+
+  await api('POST', '/api/start-detection', { role });
+  startDetectPolling(role);
+});
+
+// -- Cancel detection --
+
+async function cancelDetection() {
+  stopDetectPolling();
+  if (detectingRole) {
+    await api('POST', '/api/stop-detection');
+  }
+  detectingRole = null;
+  hideDetectModal();
+  document.querySelectorAll('.btn-detect').forEach(b => b.disabled = false);
+  loadSettings();
+}
+
+document.getElementById('detect-cancel').addEventListener('click', cancelDetection);
+
+// -- Finish and clean up --
+
+function finishDetection() {
+  stopDetectPolling();
+  detectingRole = null;
+  hideDetectModal();
+  document.querySelectorAll('.btn-detect').forEach(b => b.disabled = false);
+}
 
 /* ================================================================
    Save / Reset
    ================================================================ */
 
 document.getElementById('btn-save').addEventListener('click', async () => {
-  // Include speaker pin manual entries
   const updates = {
     pin_speaker_1: parseInt(document.getElementById('gpio-pin_speaker_1').value) || 0,
     pin_speaker_2: parseInt(document.getElementById('gpio-pin_speaker_2').value) || 0,
@@ -177,7 +332,6 @@ document.getElementById('btn-save').addEventListener('click', async () => {
 });
 
 document.getElementById('btn-reset').addEventListener('click', async () => {
-  // Post defaults
   await api('POST', '/settings', {
     frequency: 800, wpm: 20,
     pin_freq_up: 5, pin_freq_down: 6,
@@ -214,7 +368,7 @@ document.getElementById('tx-text').addEventListener('keydown', e => {
 });
 
 /* ================================================================
-   Settings toggle (button + hardware switch via polling)
+   Settings toggle
    ================================================================ */
 
 document.getElementById('btn-open-settings').addEventListener('click', openSettings);
@@ -231,7 +385,6 @@ async function pollStatus() {
       api('GET', '/settings'),
     ]);
 
-    // Mode badge
     const badge = document.getElementById('mode-badge');
     if (status.mode === 'settings') {
       badge.textContent = 'SETTINGS';
@@ -241,22 +394,19 @@ async function pollStatus() {
       badge.classList.remove('settings-mode');
     }
 
-    // Auto-open settings when hardware switch enters settings mode
     if (status.mode === 'settings') {
       document.getElementById('settings-overlay').classList.remove('hidden');
     }
 
-    // Indicators
     togglePill('ind-dit',     status.dit,      'active');
     togglePill('ind-dah',     status.dah,      'active');
     togglePill('ind-key',     status.key_down, 'key-on');
     togglePill('ind-sending', status.sending,  'sending-on');
 
-    // Main display values
     document.getElementById('disp-freq').textContent = config.frequency;
     document.getElementById('disp-wpm').textContent  = config.wpm;
 
-  } catch (e) { /* ignore fetch errors */ }
+  } catch (e) { /* ignore */ }
 }
 
 function togglePill(id, active, cls) {

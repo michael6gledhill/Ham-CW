@@ -112,6 +112,34 @@
   </div>
 </div>
 
+<!-- ===== GPIO Detection Modal ===== -->
+<div class="detect-overlay hidden" id="detect-modal">
+  <div class="detect-panel">
+    <div class="detect-header">
+      <div class="detect-pulse"></div>
+      <h2>Detecting: <span id="detect-title">--</span></h2>
+      <span class="detect-elapsed" id="detect-timer"></span>
+    </div>
+
+    <p class="detect-msg" id="detect-msg">Flip the switch now...</p>
+
+    <div class="detect-pin-list" id="detect-pin-list"></div>
+
+    <div class="detect-confirm hidden" id="detect-confirm-area">
+      <p class="detect-found-label">Detected: <strong id="detect-confirm-pin">--</strong></p>
+      <div class="detect-confirm-btns">
+        <button class="btn btn-confirm-yes" id="detect-yes">Yes, use this pin</button>
+        <button class="btn btn-confirm-no" id="detect-no">No, keep waiting</button>
+      </div>
+    </div>
+
+    <div class="detect-actions">
+      <button class="btn btn-detect-retry hidden" id="detect-retry">Try Again</button>
+      <button class="btn btn-detect-cancel" id="detect-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <script src="/static/js/main.js"></script>
 </body>
 </html>

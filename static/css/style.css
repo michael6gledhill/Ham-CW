@@ -430,3 +430,148 @@ main { width: 100%; max-width: 540px; }
   .btn-adj { min-width: 42px; padding: 8px 4px; font-size: 0.8rem; }
   .adj-value { min-width: 72px; font-size: 0.95rem; }
 }
+
+/* ---- GPIO Detection Modal ---- */
+.detect-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,0.85);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.detect-overlay.hidden { display: none; }
+
+.detect-panel {
+  background: var(--surface);
+  border: 2px solid var(--amber);
+  border-radius: 12px;
+  width: 100%;
+  max-width: 420px;
+  padding: 24px;
+}
+
+.detect-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.detect-header h2 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--amber);
+  flex: 1;
+}
+.detect-pulse {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--amber);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.detect-elapsed {
+  font-size: 0.82rem;
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.detect-msg {
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--amber);
+  margin-bottom: 14px;
+  text-align: center;
+}
+.detect-msg.detect-found {
+  color: var(--green);
+}
+.detect-msg.detect-timeout {
+  color: var(--red);
+}
+.detect-msg.detect-error {
+  color: var(--red);
+}
+
+.detect-pin-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 14px;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.detect-pin-item {
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--green);
+  font-variant-numeric: tabular-nums;
+}
+.detect-warn {
+  font-size: 0.78rem;
+  font-weight: 400;
+  color: var(--red);
+}
+
+.detect-confirm {
+  background: rgba(76, 175, 80, 0.1);
+  border: 1px solid var(--green);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 14px;
+  text-align: center;
+}
+.detect-confirm.hidden { display: none; }
+
+.detect-found-label {
+  font-size: 1.1rem;
+  color: var(--fg);
+  margin-bottom: 12px;
+}
+.detect-found-label strong {
+  color: var(--green);
+  font-size: 1.2rem;
+}
+
+.detect-confirm-btns {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+.btn-confirm-yes {
+  background: var(--green);
+  color: #000;
+  font-weight: 700;
+  padding: 10px 20px;
+}
+.btn-confirm-no {
+  background: var(--surface-2);
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  padding: 10px 20px;
+}
+
+.detect-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+}
+.btn-detect-cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--fg-dim);
+  padding: 10px 24px;
+}
+.btn-detect-cancel:hover { color: var(--fg); border-color: var(--fg-dim); }
+.btn-detect-retry {
+  background: var(--amber);
+  color: #000;
+  font-weight: 700;
+  padding: 10px 24px;
+}
+.btn-detect-retry.hidden { display: none; }
