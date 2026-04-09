@@ -110,19 +110,19 @@ def setup_gpio():
             for role in ('pin_freq_up', 'pin_freq_down',
                          'pin_speed_up', 'pin_speed_down',
                          'pin_settings', 'pin_dot', 'pin_dash'):
-                pin = cfg.get(role, 0)
-                if 2 <= pin <= 27:
+                pin = cfg.get(role, -1)
+                if 0 <= pin <= 27:
                     _gpio_devs[role] = Button(pin, pull_up=True)
 
             # Speaker PWM output
-            pin_spk = cfg.get('pin_speaker_1', 0)
-            if 2 <= pin_spk <= 27:
+            pin_spk = cfg.get('pin_speaker_1', -1)
+            if 0 <= pin_spk <= 27:
                 _gpio_devs['pin_speaker_1'] = PWMOutputDevice(
                     pin_spk, frequency=cfg['frequency'])
 
             # Speaker ground (tied LOW)
-            pin_gnd = cfg.get('pin_speaker_2', 0)
-            if 2 <= pin_gnd <= 27:
+            pin_gnd = cfg.get('pin_speaker_2', -1)
+            if 0 <= pin_gnd <= 27:
                 _gpio_devs['pin_speaker_2'] = OutputDevice(
                     pin_gnd, initial_value=False)
 
@@ -263,17 +263,12 @@ def _keyer_loop():
 
         state.sending = sq_action is not None or bool(_send_queue)
 
-        # Key state
+        # Key state — paddles always produce tone regardless of mode
         key_down = False
-        if state.mode == 'transmit':
-            if sq_action is not None:
-                key_down = (sq_action == 'on')
-            else:
-                key_down = keyer.tick(dt, dit, dah)
+        if sq_action is not None:
+            key_down = (sq_action == 'on')
         else:
-            # Settings mode -- still allow test tones from send queue
-            if sq_action is not None:
-                key_down = (sq_action == 'on')
+            key_down = keyer.tick(dt, dit, dah)
 
         # Drive speaker + audio engine
         if key_down != state.key_down:
@@ -349,9 +344,14 @@ def get_settings():
 @app.route('/settings', methods=['POST'])
 def update_settings():
     data = request.get_json(silent=True) or {}
+    old_cfg = settings.get()
     settings.update(data)
     cfg = settings.get()
     audio.set_frequency(cfg['frequency'])
+    # Re-setup GPIO if any pin assignments changed
+    pins_changed = any(cfg.get(r) != old_cfg.get(r) for r in settings.GPIO_PINS)
+    if pins_changed and not state.config_mode:
+        setup_gpio()
     return jsonify({'ok': True})
 
 
@@ -411,7 +411,7 @@ def api_confirm_gpio():
     role = data.get('role', '')
     if role not in settings.AUTO_DETECT_PINS:
         return jsonify({'error': 'invalid role'}), 400
-    if not (2 <= pin <= 27):
+    if not (0 <= pin <= 27):
         return jsonify({'error': 'invalid pin'}), 400
     _confirm_detection(pin, role)
     return jsonify({'ok': True, 'pin': pin, 'role': role})

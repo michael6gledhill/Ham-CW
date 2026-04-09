@@ -1,7 +1,9 @@
 """GPIO auto-detection via raw RPi.GPIO polling at 200Hz.
 
-Reads ALL candidate pins (2-27) simultaneously every 5ms using
+Reads ALL GPIO pins (BCM 0-27) simultaneously every 5ms using
 RPi.GPIO.input() — no callbacks, no event detection, no bounce_time.
+This includes every pin that can function as GPIO on the Raspberry Pi,
+including I2C (0,1), SPI (7-11), UART (14,15), etc.
 Detects state change when current value differs from initial AND has
 been stable for 2 consecutive reads (10ms debounce).
 """
@@ -102,9 +104,11 @@ class GPIODetector:
                 self.is_detecting = False
             return
 
-        # Set up all candidate pins as inputs with pull-up
+        # Set up ALL GPIO pins (BCM 0-27) as inputs with pull-up
+        # This covers every pin that can act as GPIO on the Pi,
+        # including I2C (0,1), SPI (7-11), UART (14,15), PCM (18-21), etc.
         candidates = []
-        for pin in range(2, 28):
+        for pin in range(0, 28):
             if pin in self._exclude_pins:
                 continue
             try:
