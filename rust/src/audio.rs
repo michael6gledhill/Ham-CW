@@ -80,7 +80,7 @@ impl AudioEngine {
         let audio_state = Arc::clone(&self.state);
 
         self.thread = Some(std::thread::spawn(move || {
-            if let Err(e) = audio_loop(&running, &audio_state) {
+            if let Err(e) = audio_loop(running, audio_state) {
                 eprintln!("morse-keyer: audio error: {e}");
             }
         }));
@@ -101,15 +101,15 @@ impl Drop for AudioEngine {
 }
 
 /// Try cpal first, then raw ALSA write, then silent.
-fn audio_loop(running: &AtomicBool, _state: &AudioState) -> Result<(), String> {
+fn audio_loop(running: Arc<AtomicBool>, state: Arc<AudioState>) -> Result<(), String> {
     // Try cpal
     #[cfg(target_os = "linux")]
     {
-        if let Ok(()) = audio_loop_cpal(running, _state) {
+        if let Ok(()) = audio_loop_cpal(Arc::clone(&running), Arc::clone(&state)) {
             return Ok(());
         }
         eprintln!("morse-keyer: cpal failed, trying raw ALSA...");
-        if let Ok(()) = audio_loop_alsa(running, _state) {
+        if let Ok(()) = audio_loop_alsa(&running, &state) {
             return Ok(());
         }
         eprintln!("morse-keyer: ALSA failed too — speaker GPIO only");
@@ -117,6 +117,7 @@ fn audio_loop(running: &AtomicBool, _state: &AudioState) -> Result<(), String> {
 
     #[cfg(not(target_os = "linux"))]
     {
+        let _ = &state;
         eprintln!("morse-keyer: no audio backend on this platform — speaker GPIO only");
     }
 
@@ -128,7 +129,7 @@ fn audio_loop(running: &AtomicBool, _state: &AudioState) -> Result<(), String> {
 }
 
 #[cfg(target_os = "linux")]
-fn audio_loop_cpal(running: &AtomicBool, state: &AudioState) -> Result<(), String> {
+fn audio_loop_cpal(running: Arc<AtomicBool>, state: Arc<AudioState>) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
     let host = cpal::default_host();
@@ -146,26 +147,22 @@ fn audio_loop_cpal(running: &AtomicBool, state: &AudioState) -> Result<(), Strin
     let mut envelope = 0.0f64;
     let ramp_inc = 1.0 / RAMP_SAMPLES.max(1) as f64;
 
-    let running2 = running as *const AtomicBool;
-    let state2 = state as *const AudioState;
+    let cb_running = Arc::clone(&running);
+    let cb_state = Arc::clone(&state);
 
-    // Safety: these references outlive the stream (we join the thread)
     let stream = device
         .build_output_stream(
             &config,
             move |data: &mut [i16], _: &cpal::OutputCallbackInfo| {
-                let running_ref = unsafe { &*running2 };
-                let state_ref = unsafe { &*state2 };
-
-                if !running_ref.load(Ordering::Relaxed) {
+                if !cb_running.load(Ordering::Relaxed) {
                     for s in data.iter_mut() {
                         *s = 0;
                     }
                     return;
                 }
 
-                let key_on = state_ref.key_on.load(Ordering::Relaxed);
-                let freq = state_ref.frequency.load(Ordering::Relaxed) as f64;
+                let key_on = cb_state.key_on.load(Ordering::Relaxed);
+                let freq = cb_state.frequency.load(Ordering::Relaxed) as f64;
                 let phase_inc = TWO_PI * freq / SAMPLE_RATE as f64;
 
                 for s in data.iter_mut() {
@@ -220,7 +217,7 @@ fn audio_loop_alsa(running: &AtomicBool, state: &AudioState) -> Result<(), Strin
                 hwp.set_rate(SAMPLE_RATE, ValueOr::Nearest).map_err(|e| e.to_string())?;
                 hwp.set_format(Format::s16()).map_err(|e| e.to_string())?;
                 hwp.set_access(Access::RWInterleaved).map_err(|e| e.to_string())?;
-                hwp.set_period_size(BUFFER_SIZE as i64, ValueOr::Nearest).map_err(|e| e.to_string())?;
+                hwp.set_period_size(BUFFER_SIZE as i32, ValueOr::Nearest).map_err(|e| e.to_string())?;
                 pcm.hw_params(&hwp).map_err(|e| e.to_string())?;
                 println!("morse-keyer: audio via ALSA ({dev})");
                 pcm_opt = Some(pcm);
