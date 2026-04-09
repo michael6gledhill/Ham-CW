@@ -230,12 +230,17 @@ def _switch_poll_loop():
 #  Keyer loop (1 ms tick -- paddles need <10 ms latency)
 # ---------------------------------------------------------------------------
 def _keyer_loop():
-    dt = 0.001
+    target_dt = 0.001          # target 1 ms tick
+    last_t = time.monotonic()
+
     sq_action = None
     sq_end = 0.0
 
     while not _shutdown.is_set():
-        t0 = time.monotonic()
+        now = time.monotonic()
+        dt = now - last_t       # actual elapsed since last tick
+        last_t = now
+
         cfg = settings.get()
         keyer.update(cfg['wpm'])
 
@@ -280,8 +285,8 @@ def _keyer_loop():
                 _speaker_off()
                 audio.key_off()
 
-        elapsed = time.monotonic() - t0
-        remaining = dt - elapsed
+        elapsed = time.monotonic() - last_t
+        remaining = target_dt - elapsed
         if remaining > 0:
             time.sleep(remaining)
 
