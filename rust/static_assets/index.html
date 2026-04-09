@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ham-cw</title>
+<link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+<!-- ===== Header ===== -->
+<header>
+  <h1>ham<span>-cw</span></h1>
+  <div class="mode-badge" id="mode-badge">TRANSMIT</div>
+  <button class="btn-settings" id="btn-open-settings">Settings</button>
+</header>
+
+<!-- ===== Main Display ===== -->
+<main>
+  <section class="display-grid">
+    <div class="param-card">
+      <span class="param-value" id="disp-freq">800</span>
+      <span class="param-unit">Hz</span>
+      <span class="param-label">Frequency</span>
+    </div>
+    <div class="param-card">
+      <span class="param-value" id="disp-wpm">20</span>
+      <span class="param-unit">WPM</span>
+      <span class="param-label">Speed</span>
+    </div>
+  </section>
+
+  <section class="indicators">
+    <span class="pill" id="ind-dit">DIT</span>
+    <span class="pill" id="ind-dah">DAH</span>
+    <span class="pill" id="ind-key">KEY</span>
+    <span class="pill" id="ind-sending">SENDING</span>
+  </section>
+
+  <section class="tx-panel">
+    <div class="tx-row">
+      <input type="text" id="tx-text" placeholder="CW text..." autocomplete="off" spellcheck="false">
+      <button class="btn btn-send" id="btn-send">Send</button>
+    </div>
+    <div class="tx-row">
+      <button class="btn btn-stop" id="btn-stop">Stop</button>
+      <button class="btn btn-test" id="btn-test">Test Tone</button>
+    </div>
+  </section>
+</main>
+
+<!-- ===== Settings Overlay ===== -->
+<div class="overlay hidden" id="settings-overlay">
+  <div class="settings-panel">
+    <div class="settings-header">
+      <h2>Settings</h2>
+      <button class="btn-close" id="btn-close-settings">&times;</button>
+    </div>
+
+    <!-- Frequency -->
+    <section class="setting-section">
+      <h3>Frequency</h3>
+      <div class="adjust-row">
+        <button class="btn btn-adj" data-p="frequency" data-s="-100">-100</button>
+        <button class="btn btn-adj" data-p="frequency" data-s="-10">-10</button>
+        <span class="adj-value" id="set-freq">800 Hz</span>
+        <button class="btn btn-adj" data-p="frequency" data-s="10">+10</button>
+        <button class="btn btn-adj" data-p="frequency" data-s="100">+100</button>
+      </div>
+    </section>
+
+    <!-- WPM -->
+    <section class="setting-section">
+      <h3>Speed</h3>
+      <div class="adjust-row">
+        <button class="btn btn-adj" data-p="wpm" data-s="-5">-5</button>
+        <button class="btn btn-adj" data-p="wpm" data-s="-1">-1</button>
+        <span class="adj-value" id="set-wpm">20 WPM</span>
+        <button class="btn btn-adj" data-p="wpm" data-s="1">+1</button>
+        <button class="btn btn-adj" data-p="wpm" data-s="5">+5</button>
+      </div>
+    </section>
+
+    <!-- GPIO Configuration -->
+    <section class="setting-section">
+      <h3>GPIO Configuration</h3>
+      <div class="gpio-list" id="gpio-list"></div>
+
+      <h4>Speaker Pins <span class="hint">(manual entry)</span></h4>
+      <div class="speaker-row">
+        <label>Speaker 1</label>
+        <input type="number" id="gpio-pin_speaker_1" min="0" max="27" class="pin-input">
+      </div>
+      <div class="speaker-row">
+        <label>Speaker 2</label>
+        <input type="number" id="gpio-pin_speaker_2" min="0" max="27" class="pin-input">
+      </div>
+    </section>
+
+    <!-- Config mode status -->
+    <div class="config-status hidden" id="config-status">
+      <div class="config-pulse"></div>
+      <span id="config-msg">Flip switch now...</span>
+      <button class="btn btn-cancel" id="btn-cancel-config">Cancel</button>
+    </div>
+
+    <!-- Actions -->
+    <div class="settings-actions">
+      <button class="btn btn-save" id="btn-save">Save All Settings</button>
+      <button class="btn btn-reset" id="btn-reset">Reset to Defaults</button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== GPIO Detection Modal ===== -->
+<div class="detect-overlay hidden" id="detect-modal">
+  <div class="detect-panel">
+    <div class="detect-header">
+      <div class="detect-pulse"></div>
+      <h2>Detecting: <span id="detect-title">--</span></h2>
+      <span class="detect-elapsed" id="detect-timer"></span>
+    </div>
+
+    <p class="detect-msg" id="detect-msg">Flip the switch now...</p>
+
+    <div class="detect-pin-list" id="detect-pin-list"></div>
+
+    <div class="detect-confirm hidden" id="detect-confirm-area">
+      <p class="detect-found-label">Detected: <strong id="detect-confirm-pin">--</strong></p>
+      <div class="detect-confirm-btns">
+        <button class="btn btn-confirm-yes" id="detect-yes">Yes, use this pin</button>
+        <button class="btn btn-confirm-no" id="detect-no">No, keep waiting</button>
+      </div>
+    </div>
+
+    <div class="detect-actions">
+      <button class="btn btn-detect-retry hidden" id="detect-retry">Try Again</button>
+      <button class="btn btn-detect-cancel" id="detect-cancel">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/js/main.js"></script>
+</body>
+</html>

@@ -1,0 +1,1 @@
+cargo:rustc-env=MIME_TYPES_GENERATED_PATH=C:\Users\cadet\Documents\GitHub\Ham-CW\rust\target\release\build\mime_guess-3be818af4563f547\out\mime_types_generated.rs
